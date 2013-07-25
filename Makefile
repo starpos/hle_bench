@@ -1,9 +1,10 @@
 .PHONY: all clean rebuild test
 
 CXXFLAGS = -O2 -DNDEBUG -pthread -std=c++11 -Wall -Wextra 
-CXXFLAGS += -I./cybozulib/include -I./include
+CXXFLAGS += -I./include
 
-BINARIES = bench test_btree
+#BINARIES = bench test_btree
+BINARIES = bench 
 
 all: $(BINARIES)
 
