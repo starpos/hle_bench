@@ -1,10 +1,12 @@
 .PHONY: all clean rebuild test
 
-CXXFLAGS = -O2 -DNDEBUG -pthread -std=c++11 -Wall -Wextra 
+CXX=g++-4.8.1
+CXXFLAGS = -O2 -DNDEBUG -pthread -std=c++11 -Wall -Wextra
 CXXFLAGS += -I./include
 
 #BINARIES = bench test_btree
-BINARIES = bench 
+#BINARIES = bench
+BINARIES = test_btree
 
 all: $(BINARIES)
 
@@ -12,7 +14,7 @@ all: $(BINARIES)
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
 .cpp.o:
-	$(CXX) $(CXXFLAGS) -c $< 
+	$(CXX) $(CXXFLAGS) -c $<
 
 clean:
 	rm -f $(BINARIES) *.o

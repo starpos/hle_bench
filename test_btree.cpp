@@ -2,8 +2,8 @@
 #include "random.hpp"
 #include "btree.hpp"
 
-int cmp(const void *keyPtr0, __attribute__((unused)) uint16_t keySize0,
-        const void *keyPtr1, __attribute__((unused)) uint16_t keySize1)
+int cmp(const void *keyPtr0, UNUSED uint16_t keySize0,
+        const void *keyPtr1, UNUSED uint16_t keySize1)
 {
     uint32_t a, b;
     assert(keySize0 == sizeof(uint32_t));
@@ -20,7 +20,7 @@ int main()
     ::printf("%zu\n", sizeof(cybozu::Page));
     cybozu::Page page(cmp);
     page.print();
-    
+
     cybozu::util::Random<uint32_t> rand(0, 255);
 
     ::printf("numStub: %zu\n", page.numStub());
@@ -35,6 +35,18 @@ int main()
         }
         //page.print();
     }
+    ::printf("numStub: %zu\n", page.numStub());
+    page.print();
+
+    cybozu::Page::Iterator it = page.begin();
+    while (it != page.end()) {
+        it = page.erase(it);
+    }
+    ::printf("numStub: %zu\n", page.numStub());
+    page.print();
+
+    page.gc();
+
     ::printf("numStub: %zu\n", page.numStub());
     page.print();
 }

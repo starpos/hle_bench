@@ -5,12 +5,15 @@
 #ifndef B_TREE_MEMORY_HPP
 #define B_TREE_MEMORY_HPP
 
+#include <cstdio>
 #include <cstdlib>
 #include <cassert>
+#include <cstring>
+#include <stdexcept>
 #include <thread>
 #include <mutex>
-#include <cstring>
 #include <condition_variable>
+#include "util.hpp"
 
 namespace cybozu {
 
@@ -44,7 +47,7 @@ struct stub
 {
     uint16_t off;  /* offset in the page. */
     uint16_t size; /* [byte] */
-} __attribute__((packed));
+} PACKED;
 
 /**
  * Multi granularity locking.
@@ -58,7 +61,7 @@ private:
     uint16_t numIs_;
     uint16_t numIx_;
 public:
-    Mgl() 
+    Mgl()
         : numS_(0)
         , numX_(0)
         , numSix_(0)
@@ -112,9 +115,10 @@ private:
     std::condition_variable cv_;
     Mgl mgl_;
 
+    uint16_t headerEndOff_; /* header end offset in the page. */
     uint16_t recEndOff_; /* record end offset in the page. */
     uint16_t stubBgnOff_; /* stub begin offset in the page. */
-    
+
 public:
     explicit Page(Compare compare) : compare_(compare), page_(allocPageStatic()) {
         init();
@@ -125,7 +129,7 @@ public:
     }
     void init() {
         mgl_.reset();
-        recEndOff_ = 0;
+        recEndOff_ = headerEndOff_ = 0;
         stubBgnOff_ = PAGE_SIZE;
     }
     struct stub &stub(size_t i) {
@@ -167,7 +171,7 @@ public:
                 return false;
             }
         }
-        
+
         /* Check free space. */
         uint16_t freeSpace = stubBgnOff_ - recEndOff_;
         if (freeSpace < sizeof(uintptr_t) + keySize0 + sizeof(struct stub)) {
@@ -184,9 +188,7 @@ public:
         ::memcpy(page_ + recOff, &value0, sizeof(uintptr_t));
         ::memcpy(page_ + recOff + sizeof(uintptr_t), keyPtr0, keySize0);
 
-
         /* Insertion sort of new stub. */
-        /* TODO: use lowerBound() result for more efficiency. */
         uint16_t i = 1;
         while (i < numStub()) {
             int r = compare_(keyPtr0, keySize0, keyPtr(i), keySize(i));
@@ -197,17 +199,35 @@ public:
         }
         stub(i - 1).off = recOff;
         stub(i - 1).size = sizeof(uintptr_t) + keySize0;
-        
+
         return true;
     }
+    /**
+     * remove a record.
+     * Stub area will be shrinked, but record area will not.
+     * You must call gc() explicitly.
+     */
     bool erase(const void *keyPtr, uint16_t keySize) {
-        uint16_t i = lowerBound(keyPtr, keySize);
-        /* now editing */
-        return false;
+        uint16_t idx = lowerBoundStub(keyPtr, keySize);
+        if (idx == uint16_t(-1)) return false;
+        eraseStub(idx);
+        return true;
+    }
+    void eraseStub(size_t i) {
+        assert(0 <= i);
+        assert(i < numStub());
+        for (uint16_t j = i; 0 < j; j--) {
+            stub(j) = stub(j - 1);
+        }
+        stubBgnOff_ += sizeof(struct stub);
     }
     template <typename T>
     bool insert(T key, uintptr_t value0, BtreeError &err) {
         return insert(&key, sizeof(key), value0, err);
+    }
+    template <typename T>
+    bool erase(T key) {
+        return erase(&key, sizeof(key));
     }
     template <typename T>
     T key(size_t i) const {
@@ -244,10 +264,10 @@ public:
         if (compare_(keyPtr0, keySize0, keyPtr(i0), keySize(i0)) < 0) {
             return 0;
         }
-        
+
         while (i0 + 1 < i1) {
             uint16_t i = (i0 + i1) / 2;
-            //::printf("i0 %u i1 %u i %u\n", i0, i1, i); //debug 
+            //::printf("i0 %u i1 %u i %u\n", i0, i1, i); //debug
             int r = compare_(keyPtr0, keySize0, keyPtr(i), keySize(i));
             if (r == 0) {
                 return i;
@@ -265,6 +285,20 @@ public:
             return i0;
         }
     }
+    /**
+     * Collect garbage.
+     */
+    void gc() {
+        uint16_t off = headerEndOff_;
+        for (size_t i = 0; i < numStub(); i++) {
+            struct stub &s = stub(i);
+            ::memmove(page_ + off, page_ + s.off, s.size);
+            s.off = off;
+            off += s.size;
+        }
+        assert(off <= recEndOff_);
+        recEndOff_ = off;
+    }
     static char *allocPageStatic() {
         void *p;
         if (::posix_memalign(&p, PAGE_SIZE, PAGE_SIZE) != 0) {
@@ -274,6 +308,83 @@ public:
         ::memset(page_, 0, PAGE_SIZE);
 #endif
         return reinterpret_cast<char *>(p);
+    }
+
+    /* now editing */
+    template <typename Base, typename It>
+    class IteratorBase
+    {
+    private:
+        friend Page;
+        Base *pageP_;
+        uint16_t idx_;
+
+    public:
+        IteratorBase(Base *pageP, uint16_t idx)
+            : pageP_(pageP), idx_(idx) {
+        }
+        It &operator=(const It &rhs) {
+            pageP_ = rhs.pageP_;
+            idx_ = rhs.idx_;
+            return *this;
+        }
+        bool operator==(const It &rhs) const { return idx_ == rhs.idx_; }
+        bool operator!=(const It &rhs) const { return idx_ != rhs.idx_; }
+        bool operator<(const It &rhs) const { return idx_ < rhs.idx_; }
+        bool operator>(const It &rhs) const { return idx_ > rhs.idx_; }
+        bool operator<=(const It &rhs) const { return idx_ <= rhs.idx_; }
+        bool operator>=(const It &rhs) const { return idx_ >= rhs.idx_; }
+        It &operator++() {
+            ++idx_;
+            return *this;
+        }
+        It &operator--() {
+            --idx_;
+            return *this;
+        }
+        void *keyPtr() { return pageP_->keyPtr(idx_); }
+        const void *keyPtr() const { return pageP_->keyPtr(idx_); }
+        uint16_t keySize() const { return pageP_->keySize(idx_); }
+        template <typename T>
+        T key() const { return pageP_->key<T>(idx_); }
+        uintptr_t value() const { return pageP_->value(idx_); }
+    };
+    class ConstIterator : public IteratorBase<const Page, ConstIterator>
+    {
+    public:
+        ConstIterator(const Page *pageP, uint16_t idx)
+            : IteratorBase<const Page, ConstIterator>(pageP, idx) {
+        }
+    };
+    class Iterator : public IteratorBase<Page, Iterator>
+    {
+    public:
+        Iterator(Page *pageP, uint16_t idx)
+            : IteratorBase<Page, Iterator>(pageP, idx) {
+        }
+        /**
+         * The iterator will indicates the next record.
+         */
+        void erase() {
+            pageP_->eraseStub(idx_);
+            /* Now idx_ indicates the next record. */
+        }
+    };
+
+    Iterator begin() { return Iterator(this, 0); }
+    ConstIterator begin() const { return ConstIterator(this, 0); }
+    ConstIterator cbegin() const { return begin(); }
+    Iterator end() { return Iterator(this, numStub()); }
+    ConstIterator end() const { return ConstIterator(this, numStub()); }
+    ConstIterator cend() const { return end(); }
+
+    /**
+     * RETURN:
+     *   Next item.
+     */
+    Iterator erase(Iterator &it) {
+        it.erase();
+        return it;
     }
 };
 
