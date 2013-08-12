@@ -15,7 +15,7 @@ int cmp(const void *keyPtr0, UNUSED uint16_t keySize0,
     return 1;
 }
 
-int main()
+void testPage0()
 {
     ::printf("%zu\n", sizeof(cybozu::Page));
     cybozu::Page page(cmp);
@@ -57,4 +57,61 @@ int main()
     ::printf("numRecords: %zu\n", page.numRecords());
     //page.print();
     page.print<uint32_t, uint32_t>();
+}
+
+void testPage1()
+{
+    cybozu::util::Random<uint32_t> rand(0, 255);
+    cybozu::Page page0(cmp);
+
+    for (int i = 0; i < 10; i++) {
+        uint32_t r = rand();
+        page0.insert(r, r);
+    }
+    page0.print<uint32_t, uint32_t>();
+    cybozu::Page page1 = page0;
+
+    auto p = page0.split();
+    cybozu::Page &p0 = *p.first;
+    cybozu::Page &p1 = *p.second;
+    p0.print<uint32_t, uint32_t>();
+    p1.print<uint32_t, uint32_t>();
+    UNUSED bool ret = p1.merge(p0);
+    assert(ret);
+    p1.print<uint32_t, uint32_t>();
+
+    assert(page1.numRecords() == p1.numRecords());
+    auto it0 = p1.cBegin();
+    auto it1 = page1.cBegin();
+
+    while (it0 != p1.cEnd() && it1 != page1.cEnd()) {
+        assert(it0.key<uint32_t>() == it1.key<uint32_t>());
+        assert(it0.value<uint32_t>() == it1.value<uint32_t>());
+        ++it0;
+        ++it1;
+    }
+}
+
+void testBtreeMap0()
+{
+    cybozu::BtreeMap<uint32_t, uint32_t> m;
+
+    cybozu::util::Random<uint32_t> rand(0, 10000);
+    for (size_t i = 0; i < 1000; i++) {
+        uint32_t r = rand();
+        m.insert(r, r);
+    }
+
+    cybozu::BtreeMap<uint32_t, uint32_t>::ConstIterator it
+        = m.begin();
+    ::printf("%u %u\n", it.key(), it.value());
+}
+
+int main()
+{
+#if 0
+    testPage0();
+    testPage1();
+#endif
+    testBtreeMap0();
 }

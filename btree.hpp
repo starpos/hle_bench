@@ -36,7 +36,7 @@ using Compare = int (*)(const void *keyPtr0, uint16_t keySize0, const void *keyP
 
 enum class BtreeError : uint8_t
 {
-    KEY_EXISTS, NO_SPACE,
+    KEY_EXISTS, KEY_NOT_EXISTS, NO_SPACE,
 };
 
 /**
@@ -122,6 +122,14 @@ struct header
     void *parent; /* parent pointer. nullptr in a root node. */
 } PACKED;
 
+constexpr uint16_t EMPTY = uint16_t(-1);
+constexpr uint16_t LOWER = uint16_t(-2);
+constexpr uint16_t UPPER = uint16_t(-3);
+static bool isNormalIndex(uint16_t idx)
+{
+    return idx != EMPTY && idx != LOWER && idx != UPPER;
+}
+
 /**
  * Page wrapper.
  * This store sorted key-value records.
@@ -144,6 +152,23 @@ public:
     virtual ~Page() noexcept {
         ::free(page_);
     }
+    Page(const Page &rhs) : compare_(rhs.compare_), page_(allocPageStatic()) {
+        ::memcpy(page_, rhs.page_, PAGE_SIZE);
+    }
+    Page(Page &&rhs) : compare_(rhs.compare_), page_(rhs.page_) {
+        rhs.page_ = nullptr;
+    }
+    Page &operator=(const Page &rhs) {
+        if (!page_) { page_ = allocPageStatic(); }
+        if (page_ != rhs.page_) {
+            ::memcpy(page_, rhs.page_, PAGE_SIZE);
+        }
+        return *this;
+    }
+    Page &operator=(Page &&rhs) {
+        swap(rhs);
+        return *this;
+    }
     void init() {
         mgl_.reset();
         clear();
@@ -159,6 +184,9 @@ public:
         uint16_t size = PAGE_SIZE - headerEndOff();
         ::memset(page_ + header().recEndOff, 0, size);
 #endif
+    }
+    bool empty() const {
+        return stubBgnOff() == PAGE_SIZE;
     }
     size_t numRecords() const {
         return numStub();
@@ -184,7 +212,7 @@ public:
         /* Key existence check. */
         {
             uint16_t i = lowerBoundStub(keyPtr0, keySize0);
-            if (i < numStub() && compare_(keyPtr0, keySize0, keyPtr(i), keySize(i)) == 0) {
+            if (isNormalIndex(i) && compare_(keyPtr0, keySize0, keyPtr(i), keySize(i)) == 0) {
                 if (err) *err = BtreeError::KEY_EXISTS;
                 return false;
             }
@@ -231,13 +259,56 @@ public:
      */
     bool erase(const void *keyPtr, uint16_t keySize) {
         uint16_t idx = lowerBoundStub(keyPtr, keySize);
-        if (idx == uint16_t(-1)) return false;
+        if (!isNormalIndex(idx)) return false;
         eraseStub(idx);
         return true;
     }
     template <typename Key>
     bool erase(Key key) {
         return erase(&key, sizeof(key));
+    }
+    /**
+     * Update value of a given key.
+     * RETURN:
+     *   true in success.
+     *   false if value size is larger than the stored (TODO).
+     *         if key does not exist.
+     */
+    bool update(const void *keyPtr0, uint16_t keySize0, const void *valuePtr0, uint16_t valueSize0, BtreeError *err = nullptr) {
+        uint16_t i = lowerBoundStub(keyPtr0, keySize0);
+        if (!isNormalIndex(i) || compare_(keyPtr0, keySize0, keyPtr(i), keySize(i)) != 0) {
+            if (err) *err = BtreeError::KEY_NOT_EXISTS;
+            return false;
+        }
+        if (valueSize(i) < valueSize0) {
+            if (err) *err = BtreeError::NO_SPACE;
+            return false;
+        }
+        stub(i).valueSize = valueSize0;
+        ::memcpy(valuePtr(i), valuePtr0, valueSize0);
+        return true;
+    }
+    template <typename Key, typename Value>
+    bool update(Key key, Value value) {
+        return update(&key, sizeof(key), &value, sizeof(value));
+    }
+    bool isLower(const void *keyPtr0, uint16_t keySize0) const {
+        assert(numStub() != 0);
+        uint16_t i0 = 0;
+        return compare_(keyPtr0, keySize0, keyPtr(i0), keySize(i0)) < 0;
+    }
+    template <typename Key>
+    bool isLower(Key key) const {
+        return isLower(&key, sizeof(key));
+    }
+    bool isUpper(const void *keyPtr0, uint16_t keySize0) const {
+        assert(numStub() != 0);
+        uint16_t i1 = numStub() - 1;
+        return compare_(keyPtr(i1), keySize(i1), keyPtr0, keySize0) < 0;
+    }
+    template <typename Key>
+    bool isUpper(Key key) const {
+        return isUpper(&key, sizeof(key));
     }
     void print() const {
         ::printf("Page: headerEndOff %u recEndOff %u stubBgnOff %u "
@@ -306,33 +377,39 @@ public:
      * Split a page into two pages.
      * The page will be cleared.
      */
-    std::pair<std::shared_ptr<Page>, std::shared_ptr<Page> > split(bool isHalfAndHalf = true) {
-        auto p0 = std::make_shared<Page>(compare_);
-        auto p1 = std::make_shared<Page>(compare_);
-        p0->header().level = header().level;
-        p1->header().level = header().level;
-        if (!isHalfAndHalf) {
-            swap(*p0);
+    std::pair<Page *, Page *> split(bool isHalfAndHalf = true) {
+        Page *p0 = new Page(compare_);
+        Page *p1 = new Page(compare_);
+        try {
+            p0->header().level = header().level;
+            p1->header().level = header().level;
+            if (!isHalfAndHalf) {
+                swap(*p0);
+                clear();
+                return std::make_pair(p0, p1);
+            }
+            /**
+             * Insert in the reverse order for efficiency.
+             */
+            uint16_t n = numStub();
+            UNUSED bool ret;
+            for (uint16_t i = n; n / 2 < i; i--) {
+                uint16_t j = i - 1;
+                ret = p1->insert(keyPtr(j), keySize(j), valuePtr(j), valueSize(j));
+                assert(ret);
+            }
+            for (uint16_t i = n / 2; 0 < i; i--) {
+                uint16_t j = i - 1;
+                ret = p0->insert(keyPtr(j), keySize(j), valuePtr(j), valueSize(j));
+                assert(ret);
+            }
             clear();
             return std::make_pair(p0, p1);
+        } catch (...) {
+            delete p0;
+            delete p1;
+            throw;
         }
-        /**
-         * Insert in the reverse order for efficiency.
-         */
-        uint16_t n = numStub();
-        UNUSED bool ret;
-        for (uint16_t i = n; n / 2 < i; i--) {
-            uint16_t j = i - 1;
-            ret = p1->insert(keyPtr(j), keySize(j), valuePtr(j), valueSize(j));
-            assert(ret);
-        }
-        for (uint16_t i = n / 2; 0 < i; i--) {
-            uint16_t j = i - 1;
-            ret = p0->insert(keyPtr(j), keySize(j), valuePtr(j), valueSize(j));
-            assert(ret);
-        }
-        clear();
-        return std::make_pair(p0, p1);
     }
     /**
      * Merge a page into the page.
@@ -346,7 +423,7 @@ public:
      *   false if not (data will not be changed).
      */
     bool merge(Page &rhs) {
-        if (rhs.totalDataSize() < freeSpace()) {
+        if (freeSpace() < rhs.totalDataSize()) {
             return false; /* no enough space. */
         }
         /* Reverse order. */
@@ -366,7 +443,7 @@ public:
     template <typename Base, typename It>
     class IteratorBase
     {
-    private:
+    protected:
         friend Page;
         Base *pageP_;
         uint16_t idx_;
@@ -412,6 +489,7 @@ public:
         ConstIterator(const Page *pageP, uint16_t idx)
             : IteratorBase<const Page, ConstIterator>(pageP, idx) {
         }
+        const Page *page() const { return pageP_; }
     };
     class Iterator : public IteratorBase<Page, Iterator>
     {
@@ -419,6 +497,7 @@ public:
         Iterator(Page *pageP, uint16_t idx)
             : IteratorBase<Page, Iterator>(pageP, idx) {
         }
+        Page *page() { return pageP_; }
         /**
          * The iterator will indicates the next record.
          */
@@ -445,18 +524,68 @@ public:
     }
     Iterator lowerBound(const void *keyPtr0, uint16_t keySize0) {
         uint16_t i = lowerBoundStub(keyPtr0, keySize0);
-        if (i == uint16_t(-1)) i = numStub();
+        if (!isNormalIndex(i)) i = numStub();
         return Iterator(this, i);
     }
     ConstIterator lowerBound(const void *keyPtr0, uint16_t keySize0) const {
         uint16_t i = lowerBoundStub(keyPtr0, keySize0);
-        if (i == uint16_t(-1)) i = numStub();
+        if (!isNormalIndex(i)) i = numStub();
         return ConstIterator(this, i);
     }
     template <typename T>
     ConstIterator lowerBound(T key) const { return lowerBound(&key, sizeof(T)); }
     template <typename T>
     Iterator lowerBound(T key) const { return lowerBound(&key, sizeof(T)); }
+
+    template <typename Key>
+    Key minKey() const {
+        assert(!empty());
+        return key<Key>(0);
+    }
+    template <typename Key>
+    Key maxKey() const {
+        assert(!empty());
+        return key<Key>(numStub() - 1);
+    }
+
+    /**
+     * These functions are used for non-leaf pages.
+     */
+    template <typename Key>
+    Page *child(Key key) {
+        assert(!empty());
+        if (isLower<Key>(key)) return leftMostChild();
+        if (isUpper<Key>(key)) return rightMostChild();
+        uint16_t i = lowerBoundStub(&key, sizeof(Key));
+        assert(isNormalIndex(i));
+        return value<Page *>(i);
+    }
+    template <typename Key>
+    const Page *child(Key key) const {
+        assert(!empty());
+        if (isLower<Key>(key)) return leftMostChild();
+        if (isUpper<Key>(key)) return rightMostChild();
+        uint16_t i = lowerBoundStub(&key, sizeof(Key));
+        assert(isNormalIndex(i));
+        return value<const Page *>(i);
+    }
+    Page *leftMostChild() {
+        assert(!empty());
+        return value<Page *>(0);
+    }
+    const Page *leftMostChild() const {
+        assert(!empty());
+        return value<const Page *>(0);
+    }
+    Page *rightMostChild() {
+        assert(!empty());
+        return value<Page *>(numStub() - 1);
+    }
+    const Page *rightMostChild() const {
+        assert(!empty());
+        return value<const Page *>(numStub() - 1);
+    }
+
 private:
     uint16_t headerEndOff() const { return sizeof(struct header); }
     uint16_t recEndOff() const { return header().recEndOff; }
@@ -499,19 +628,17 @@ private:
      * lowerBound function.
      * Binary search in stubs.
      * RETURN:
-     *   uint16_t(-1) if the key is larger than all keys in the page.
-     *   or the page is empty.
+     *   UPPER if the key is larger than all keys in the page,
+     *   LOWER if the key is less than all keys in the page,
+     *   EMPTY if the page is empty.
+     *   stub index for other cases (0 <= i < numStub()).
      */
     uint16_t lowerBoundStub(const void *keyPtr0, uint16_t keySize0) const {
-        if (numStub() == 0) return uint16_t(-1);
-        uint16_t i0 = 0, i1 = numStub() - 1;
-        if (compare_(keyPtr(i1), keySize(i1), keyPtr0, keySize0) < 0) {
-            return uint16_t(-1);
-        }
-        if (compare_(keyPtr0, keySize0, keyPtr(i0), keySize(i0)) < 0) {
-            return 0;
-        }
+        if (empty()) return EMPTY;
+        if (isLower(keyPtr0, keySize0)) return LOWER;
+        if (isUpper(keyPtr0, keySize0)) return UPPER;
 
+        uint16_t i0 = 0, i1 = numStub() - 1;
         while (i0 + 1 < i1) {
             uint16_t i = (i0 + i1) / 2;
             //::printf("i0 %u i1 %u i %u\n", i0, i1, i); //debug
@@ -551,56 +678,447 @@ private:
     }
 };
 
-#if 0
-/**
- * Branch node class.
- */
-class BNode : public Page
+template <typename Key, typename T,
+          typename CompareT = std::less<Key> >
+class PageX : public Page
 {
-public:
-    BNode(Compare compare, uint16_t level) : Page(compare) {
-        header().level = level;
+private:
+    static CompareT less_;
+    static int compare_(const void *keyPtr0, uint16_t keySize0, const void *keyPtr1, uint16_t keySize1) {
+        assert(sizeof(Key) == keySize0);
+        assert(sizeof(Key) == keySize1);
+        Key key0 = *reinterpret_cast<const Key *>(keyPtr0);
+        Key key1 = *reinterpret_cast<const Key *>(keyPtr1);
+        if (key0 == key1) return 0;
+        if (less_(key0, key1)) return -1;
+        return 1;
     }
+
+public:
+    PageX() : Page(compare_) {}
+    ~PageX() noexcept = default;
+    bool insert(const Key &key, const T &value, BtreeError *err = nullptr) {
+        return Page::insert<Key, T>(key, value, err);
+    }
+    bool update(const Key &key, const T &value, BtreeError *err = nullptr) {
+        return Page::update<Key, T>(key, value, err);
+    }
+    class Iterator : public Page::Iterator
+    {
+    public:
+        Iterator(PageX *page, uint16_t idx)
+            : Page::Iterator(page, idx) {
+        }
+        Key key() const { return Page::key<Key>(); }
+        T value() const { return Page::value<T>(); }
+    };
+    class ConstIterator : public Page::ConstIterator
+    {
+    public:
+        ConstIterator(const PageX *page, uint16_t idx)
+            : Page::ConstIterator(page, idx) {
+        }
+        Key key() const { return Page::key<Key>(); }
+        T value() const { return Page::value<T>(); }
+    };
+
+    Iterator begin() { return Iterator(this, 0); }
+    Iterator end() { return Iterator(this, numStub()); }
+    ConstIterator begin() const { return ConstIterator(this, 0); }
+    ConstIterator end() const { return ConstIterator(this, numStub()); }
+    Iterator lowerBound(const Key &key) {
+        uint16_t idx = lowerBoundStub(&key, sizeof(key));
+        if (!isNormalIndex(idx)) return end();
+        return Iterator(this, idx);
+    }
+    ConstIterator lowerBound(const Key &key) const {
+        uint16_t idx = lowerBoundStub(&key, sizeof(key));
+        if (!isNormalIndex(idx)) return end();
+        return ConstIterator(this, idx);
+    }
+
+    Key minKey() const { return Page::minKey<Key>(); }
+    Key maxKey() const { return Page::maxKey<Key>(); }
+
     /* now editing */
 };
 
-/**
- * Leaf node class.
- */
-class LNode : public Page
-{
-public:
-    explicit LNode(Compare compare) : Page(compare) {
-        header().level = 0;
-    }
-    LNode split(bool isHalfAndHalf = true) {
-        /* now editing */
-    }
-
-/* now editing */
-};
-#endif
-
-#if 0
 /**
  * Map structure using B+tree.
  *
  * T1: key type. copyable or movable.
  * T2: value type. copyable or movable.
  */
-template<class Key, class T,
-         class Compare = std::less<Key>,
-         class Allocator = std::allocator<std::pair<const Key, T> > >
+template <typename Key, typename T,
+          class CompareT = std::less<Key> >
 class BtreeMap
 {
 private:
-    std::unique_ptr<>
-    public:
-    BtreeMap()
+    CompareT less_;
+    Page root_;
 
-    BtreeMap(std::initializer_list list)
+    static int compare(const void *keyPtr0, uint16_t keySize0, const void *keyPtr1, uint16_t keySize1) {
+        CompareT less;
+        assert(sizeof(Key) == keySize0);
+        assert(sizeof(Key) == keySize1);
+        const Key &key0 = *reinterpret_cast<const Key *>(keyPtr0);
+        const Key &key1 = *reinterpret_cast<const Key *>(keyPtr1);
+        if (key0 == key1) return 0;
+        if (less(key0, key1)) return -1;
+        return 1;
+    }
+
+public:
+    /* now editing */
+    BtreeMap() : root_(compare) {
+        root_.header().level = 0;
+        root_.header().parent = nullptr;
+    }
+    ~BtreeMap() noexcept {
+        /* TODO: remove all pages except for root. */
+
+
+        /* now editing */
+    }
+    bool insert(const Key &key, const T &value, BtreeError *err = nullptr) {
+        UNUSED size_t size = sizeof(key) + sizeof(value);
+        assert(size < (2 << 16));
+
+        /* Get the corresponding leaf page. */
+        Page *p = lowerBound(key);
+        assert(p->isLeaf());
+
+        if (!p->canInsert(sizeof(key) + sizeof(value))) {
+            p = splitLeaf(p, key);
+        }
+        assert(p->canInsert(sizeof(key) + sizeof(Page *)));
+        return p->insert<Key, T>(key, value, err);
+    }
+
+    /**
+     * Split a leaf page.
+     * If the ancestors has no space for index records,
+     * Split will occur recursively.
+     *
+     * RETURN:
+     *   Page pointer for the key to be inserted.
+     *   The level is the same as a given page.
+     */
+    Page *splitLeaf(Page *page, const Key &key) {
+        assert(page->isLeaf());
+        Page *parent = page->parent();
+        Page *p0, *p1;
+        std::tie(p0, p1) = page->split();
+        assert(!p0->empty());
+        assert(!p1->empty());
+        p0->header().level = 0;
+        p1->header().level = 0;
+        Key key0 = p0->minKey<Key>();
+        Key key1 = p1->minKey<Key>();
+
+        UNUSED bool ret;
+        if (!parent) {
+            /* Root */
+            assert(page->empty());
+            ret = page->insert(key0, p0); assert(ret);
+            ret = page->insert(key1, p1); assert(ret);
+            p0->header().parent = page;
+            p1->header().parent = page;
+            page->header().level = 1;
+            return (less_(key, key1)) ? p0 : p1;
+        } else {
+            Page *parent0 = parent;
+            Page *parent1 = parent;
+            if (!parent->canInsert(sizeof(key) + sizeof(Page *))) {
+                parent1 = splitNonLeaf(parent, key1);
+            }
+            ret = parent0->update(key0, p0); assert(ret);
+            ret = parent1->insert(key1, p1); assert(ret);
+            p0->header().parent = parent0;
+            p1->header().parent = parent1;
+        }
+        return (less_(key, key1)) ? p0 : p1;
+    }
+    /**
+     * Split a non-leaf page.
+     * @key
+     * RETURN:
+     *  Which splitted page the given key should be inserted.
+     */
+    Page *splitNonLeaf(Page *page, const Key &key) {
+        assert(!page->isLeaf());
+        uint16_t level = page->header().level;
+        Page *parent = page->parent();
+        Page *p0, *p1;
+        std::tie(p0, p1) = page->split();
+        assert(!p0->empty());
+        assert(!p1->empty());
+        p0->header().level = level;
+        p1->header().level = level;
+        Key key0 = p0->minKey<Key>();
+        Key key1 = p1->minKey<Key>();
+
+        UNUSED bool ret;
+        if (!parent) {
+            /* Root */
+            assert(page->empty());
+            ret = page->insert(key0, p0); assert(ret);
+            ret = page->insert(key1, p1); assert(ret);
+            p0->header().parent = page;
+            p1->header().parent = page;
+            page->header().level = level + 1;
+        } else {
+            Page *parent0 = parent;
+            Page *parent1 = parent;
+            if (!parent->canInsert(sizeof(key) + sizeof(Page *))) {
+                parent1 = splitNonLeaf(parent, key1);
+            }
+            ret = parent0->update(key0, p0); assert(ret);
+            ret = parent1->insert(key1, p1); assert(ret);
+            p0->header().parent = parent0;
+            p1->header().parent = parent1;
+        }
+
+        /* Update parent field of all children. */
+        auto it0 = p0->begin();
+        while (it0 != p0->end()) {
+            Page *child = it0.value<Page *>();
+            child->header().parent = p0;
+            ++it0;
+        }
+        auto it1 = p1->begin();
+        while (it1 != p1->end()) {
+            Page *child = it1.value<Page *>();
+            child->header().parent = p1;
+            ++it1;
+        }
+
+        /* Which splitted page should the key inserted. */
+        return less_(key, key1) ? p0 : p1;
+    }
+
+    class ConstIterator
+    {
+    protected:
+        using MapT = const BtreeMap<Key, T, CompareT>;
+        using PageIt = Page::ConstIterator;
+        using It = ConstIterator;
+
+        MapT *mapP_; /* must not be nullptr. */
+        const Page *pageP_; /* nullptr indicates the end. */
+        Page::ConstIterator it_; /* no meaning if pageP_ is nullptr. */
+
+    public:
+        ConstIterator(MapT *mapP, const Page *pageP, PageIt it)
+            : mapP_(mapP), pageP_(pageP), it_(it) {
+            assert(mapP);
+        }
+        It &operator=(const It &rhs) {
+            mapP_ = rhs.mapP_;
+            it_ = rhs.it_;
+            return *this;
+        }
+        bool operator==(const It &rhs) const {
+            if (!pageP_ && !rhs.pageP_) return true; /* both end. */
+            if (pageP_ && rhs.pageP_) { /* both valid. */
+                return pageP_ == rhs.pageP_ && it_ == rhs.it_;
+            }
+            return false;
+        }
+        bool operator!=(const It &rhs) const {
+            return !operator==(rhs);
+        }
+        bool operator<(const It &rhs) const {
+            if (!pageP_ && !rhs.pageP_) return false; /* both end. */
+            if (pageP_ && rhs.pageP_) { /* both valid. */
+                if (pageP_ == rhs.pageP_) return it_ < rhs.it_;
+                assert(!pageP_->empty());
+                assert(!rhs.pageP_->empty());
+                Page *p0 = pageP_;
+                Page *p1 = rhs.pageP_;
+                return mapP_->less_(p1->minKey<Key>(), p1->minKey<Key>());
+            }
+            return pageP_ != nullptr;
+        }
+        bool operator<=(const It &rhs) const {
+            return *this < rhs || *this == rhs;
+        }
+        bool operator>(const It &rhs) const {
+            return !(*this <= rhs);
+        }
+        bool operator>=(const It &rhs) const {
+            return !(*this < rhs);
+        }
+        It &operator++() {
+            if (!pageP_) {
+                /* Cyclic */
+                pageP_ = mapP_->leftMostPage();
+                if (!pageP_->empty()) {
+                    it_ = pageP_->begin();
+                } else {
+                    pageP_ = nullptr;
+                }
+                return *this;
+            }
+            assert(it_ != pageP_->end());
+            ++it_;
+            if (it_ == pageP_->end()) {
+                pageP_ = nextPage(pageP_);
+                if (pageP_) {
+                    it_ = pageP_->begin();
+                    assert(it_ != pageP_->end());
+                }
+            }
+            return *this;
+        }
+        It &operator--() {
+            if (!pageP_) {
+                /* Cyclic */
+                pageP_ = mapP_->rightMostPage();
+                if (!pageP_->empty()) {
+                    it_ = pageP_->end();
+                    --it_;
+                } else {
+                    pageP_ = nullptr;
+                }
+                return *this;
+            }
+            if (it_ == pageP_->begin()) {
+                pageP_ = prevPage(pageP_);
+                if (pageP_) {
+                    it_ = pageP_->end();
+                    --it_;
+                }
+                return *this;
+            }
+            --it_;
+            return *this;
+        }
+
+        Key key() const { return it_.key<Key>(); }
+        T value() const { return it_.value<T>(); }
+    };
+
+    ConstIterator begin() const {
+        const Page *page = leftMostPage();
+        return ConstIterator(this, page, page->cBegin());
+    }
+    ConstIterator end() const {
+        const Page *page = rightMostPage(); /* no meaning. */
+        return ConstIterator(this, nullptr, page->cEnd());
+    }
+    ConstIterator cBegin() const {
+        return begin();
+    }
+    ConstIterator cEnd() const {
+        return end();
+    }
+
+private:
+    /**
+     * Get leaf page that has a given key.
+     */
+    Page *lowerBound(const Key &key) {
+        Page *p = &root_;
+        while (!p->isLeaf()) p = p->child(key);
+        return p;
+    }
+    const Page *lowerBound(const Key &key) const {
+        const Page *p = &root_;
+        while (!p->isLeaf()) p = p->child(key);
+        return p;
+    }
+    /**
+     * Next leaf page.
+     */
+    Page *nextPage(Page *page) {
+        if (!page) return leftMostPage();
+        assert(page->isLeaf());
+        if (page->isRoot()) return nullptr;
+        Page *p = page->parent();
+        assert(p);
+        Key key0 = page->minKey<Key>();
+
+        /* Traverse ancestors. */
+        Key key = key0;
+        while (true) {
+            Page::Iterator it = p->lowerBound(key);
+            assert(it != p->end());
+            ++it;
+            if (it != p->end()) {
+                p = p->child(it.key<Key>());
+                break;
+            }
+            key = p->minKey<Key>();
+            p = p->parent();
+            if (p == nullptr) return nullptr;
+        }
+
+        /* Traverse descendants. */
+        while (!p->isLeaf()) {
+            p = p->leftMostChild();
+        }
+        return p;
+    }
+    /**
+     * Previous leaf page.
+     */
+    Page *prevPage(Page *page) {
+        if (!page) return rightMostPage();
+        assert(page->isLeaf());
+        if (page->isRoot()) return nullptr;
+        Page *p = page->parent();
+        assert(p);
+        Key key0 = page->minKey<Key>();
+
+        /* Traverse ancestors. */
+        Key key = key0;
+        while (true) {
+            Page::Iterator it = p->lowerBound(key);
+            assert(it != p->end());
+            if (it != p->begin()) {
+                --it;
+                p = p->child(it.key<Key>());
+                break;
+            }
+            key = p->minKey<Key>();
+            p = p->parent();
+            if (p == nullptr) return nullptr;
+        }
+
+        /* Traverse descendants. */
+        while (!p->isLeaf()) {
+            p = p->rightMostChild();
+        }
+        return p;
+    }
+    /**
+     * Right-most leaf page.
+     */
+    Page *rightMostPage() {
+        Page *p = &root_;
+        while (!p->isLeaf()) p = p->rightMostChild();
+        return p;
+    }
+    const Page *rightMostPage() const {
+        const Page *p = &root_;
+        while (!p->isLeaf()) p = p->rightMostChild();
+        return p;
+    }
+    /**
+     * Left-most leaf page.
+     */
+    Page *leftMostPage() {
+        Page *p = &root_;
+        while (!p->isLeaf()) p = p->leftMostChild();
+        return p;
+    }
+    const Page *leftMostPage() const {
+        const Page *p = &root_;
+        while (!p->isLeaf()) p = p->leftMostChild();
+        return p;
+    }
 };
-#endif
 
 } //namespace cybozu
 
