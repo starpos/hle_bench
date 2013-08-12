@@ -110,10 +110,16 @@ public:
     /* unlock */
 };
 
+/**
+ * Page header data.
+ */
 struct header
 {
     uint16_t recEndOff; /* record end offset in the page. */
     uint16_t stubBgnOff; /* stub begin offset in the page. */
+    uint16_t level; /* 0 for leaf nodes. */
+    uint16_t reserved0;
+    void *parent; /* parent pointer. nullptr in a root node. */
 } PACKED;
 
 /**
@@ -131,34 +137,47 @@ private:
     /* All persistent data are stored in the page. */
     char *page_;
 
-    struct header &header() {
-        return *reinterpret_cast<struct header *>(page_);
-    }
-    const struct header &header() const {
-        return *reinterpret_cast<const struct header *>(page_);
-    }
-    uint16_t headerEndOff() const { return sizeof(struct header); }
-    uint16_t recEndOff() const { return header().recEndOff; }
-    uint16_t stubBgnOff() const { return header().stubBgnOff; }
-
 public:
     explicit Page(Compare compare) : compare_(compare), page_(allocPageStatic()) {
         init();
     }
-    ~Page() noexcept {
+    virtual ~Page() noexcept {
         ::free(page_);
     }
     void init() {
         mgl_.reset();
+        clear();
+    }
+    /**
+     * Delete all records in the page.
+     */
+    void clear() {
         header().recEndOff = headerEndOff();
         header().stubBgnOff = PAGE_SIZE;
+#if DEBUG
+        /* zero-clear */
+        uint16_t size = PAGE_SIZE - headerEndOff();
+        ::memset(page_ + header().recEndOff, 0, size);
+#endif
     }
     size_t numRecords() const {
         return numStub();
     }
+    uint16_t freeSpace() const {
+        return stubBgnOff() - recEndOff();
+    }
+    /**
+     * Total data size for record and stub.
+     */
+    uint16_t totalDataSize() const {
+        uint16_t total = 0;
+        for (uint16_t i = 0; i < numStub(); i++) {
+            total += keySize(i) + valueSize(i) + sizeof(struct stub);
+        }
+        return total;
+    }
     bool canInsert(uint16_t size) const {
-        uint16_t freeSpace = stubBgnOff() - recEndOff();
-        return size + sizeof(struct stub) <= freeSpace;
+        return size + sizeof(struct stub) <= freeSpace();
     }
     bool insert(const void *keyPtr0, uint16_t keySize0,
                 const void *valuePtr0, uint16_t valueSize0, BtreeError *err = nullptr) {
@@ -271,6 +290,76 @@ public:
         return reinterpret_cast<char *>(p);
     }
 
+    struct header &header() {
+        return *reinterpret_cast<struct header *>(page_);
+    }
+    const struct header &header() const {
+        return *reinterpret_cast<const struct header *>(page_);
+    }
+    const Page *parent() const { return reinterpret_cast<const Page *>(header().parent); }
+    Page *parent() { return reinterpret_cast<Page *>(header().parent); }
+    bool isRoot() const { return parent() == nullptr; }
+    bool isBranch() const { return header().level != 0; } /* may include root. */
+    bool isLeaf() const { return header().level == 0; } /* may include root. */
+
+    /**
+     * Split a page into two pages.
+     * The page will be cleared.
+     */
+    std::pair<std::shared_ptr<Page>, std::shared_ptr<Page> > split(bool isHalfAndHalf = true) {
+        auto p0 = std::make_shared<Page>(compare_);
+        auto p1 = std::make_shared<Page>(compare_);
+        p0->header().level = header().level;
+        p1->header().level = header().level;
+        if (!isHalfAndHalf) {
+            swap(*p0);
+            clear();
+            return std::make_pair(p0, p1);
+        }
+        /**
+         * Insert in the reverse order for efficiency.
+         */
+        uint16_t n = numStub();
+        UNUSED bool ret;
+        for (uint16_t i = n; n / 2 < i; i--) {
+            uint16_t j = i - 1;
+            ret = p1->insert(keyPtr(j), keySize(j), valuePtr(j), valueSize(j));
+            assert(ret);
+        }
+        for (uint16_t i = n / 2; 0 < i; i--) {
+            uint16_t j = i - 1;
+            ret = p0->insert(keyPtr(j), keySize(j), valuePtr(j), valueSize(j));
+            assert(ret);
+        }
+        clear();
+        return std::make_pair(p0, p1);
+    }
+    /**
+     * Merge a page into the page.
+     *
+     * For efficient merge:
+     *   *this: right page.
+     *   rhs:   left page.
+     *
+     * RETURN:
+     *   true if merge succeeded. the rhs will be cleared.
+     *   false if not (data will not be changed).
+     */
+    bool merge(Page &rhs) {
+        if (rhs.totalDataSize() < freeSpace()) {
+            return false; /* no enough space. */
+        }
+        /* Reverse order. */
+        uint16_t n = rhs.numStub();
+        UNUSED bool ret;
+        for (uint16_t i = n; 0 < i; i--) {
+            uint16_t j = i - 1;
+            ret = insert(rhs.keyPtr(j), rhs.keySize(j), rhs.valuePtr(j), rhs.valueSize(j));
+            assert(ret);
+        }
+        rhs.clear();
+        return true;
+    }
     /**
      * Base class of iterators.
      */
@@ -369,6 +458,9 @@ public:
     template <typename T>
     Iterator lowerBound(T key) const { return lowerBound(&key, sizeof(T)); }
 private:
+    uint16_t headerEndOff() const { return sizeof(struct header); }
+    uint16_t recEndOff() const { return header().recEndOff; }
+    uint16_t stubBgnOff() const { return header().stubBgnOff; }
     struct stub &stub(size_t i) {
         assert(i < numStub());
         struct stub *st = reinterpret_cast<struct stub *>(page_ + stubBgnOff());
@@ -459,6 +551,35 @@ private:
     }
 };
 
+#if 0
+/**
+ * Branch node class.
+ */
+class BNode : public Page
+{
+public:
+    BNode(Compare compare, uint16_t level) : Page(compare) {
+        header().level = level;
+    }
+    /* now editing */
+};
+
+/**
+ * Leaf node class.
+ */
+class LNode : public Page
+{
+public:
+    explicit LNode(Compare compare) : Page(compare) {
+        header().level = 0;
+    }
+    LNode split(bool isHalfAndHalf = true) {
+        /* now editing */
+    }
+
+/* now editing */
+};
+#endif
 
 #if 0
 /**
