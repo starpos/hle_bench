@@ -1,7 +1,13 @@
 .PHONY: all clean rebuild test
 
 CXX=g++-4.8.1
-CXXFLAGS = -O2 -DNDEBUG -pthread -std=c++11 -Wall -Wextra
+
+ifeq ($(DEBUG),1)
+  CFLAGS_OPT = -DDEBUG -g
+else
+  CFLAGS_OPT = -DNDEBUG -O2
+endif
+CXXFLAGS = $(CFLAGS_OPT) -pthread -std=c++11 -Wall -Wextra
 CXXFLAGS += -I./include
 
 #BINARIES = bench test_btree

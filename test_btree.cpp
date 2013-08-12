@@ -19,34 +19,42 @@ int main()
 {
     ::printf("%zu\n", sizeof(cybozu::Page));
     cybozu::Page page(cmp);
-    page.print();
+    //page.print();
+    page.print<uint32_t, uint32_t>();
 
     cybozu::util::Random<uint32_t> rand(0, 255);
 
-    ::printf("numStub: %zu\n", page.numStub());
+    ::printf("numRecords: %zu\n", page.numRecords());
     for (size_t i = 0; i < 100; i++) {
         uint32_t r = rand();
         //::printf("try to insert %0x\n", r);
         cybozu::BtreeError err;
-        if (!page.insert(r, r, err)) {
+        if (!page.insert(r, r, &err)) {
             ::printf("insertion error.\n");
         } else {
             //::printf("inserted %0x\n", r);
         }
         //page.print();
     }
-    ::printf("numStub: %zu\n", page.numStub());
-    page.print();
+    //page.print();
+    ::printf("numRecords: %zu\n", page.numRecords());
+    page.print<uint32_t, uint32_t>();
 
     cybozu::Page::Iterator it = page.begin();
     while (it != page.end()) {
-        it = page.erase(it);
+        if (it.key<uint32_t>() % 2 == 0) {
+            it = page.erase(it);
+        } else {
+            ++it;
+        }
     }
-    ::printf("numStub: %zu\n", page.numStub());
-    page.print();
+    ::printf("numRecords: %zu\n", page.numRecords());
+    //page.print();
+    page.print<uint32_t, uint32_t>();
 
     page.gc();
 
-    ::printf("numStub: %zu\n", page.numStub());
-    page.print();
+    ::printf("numRecords: %zu\n", page.numRecords());
+    //page.print();
+    page.print<uint32_t, uint32_t>();
 }
