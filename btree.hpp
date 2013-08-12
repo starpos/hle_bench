@@ -23,7 +23,8 @@ namespace cybozu {
  * Page size can be up to 32KiB.
  * because uint16_t is used for offset inside a page.
  */
-constexpr unsigned int PAGE_SIZE = 4096;
+//constexpr unsigned int PAGE_SIZE = 4096;
+constexpr unsigned int PAGE_SIZE = 128;
 
 /**
  * Comparison function type.
@@ -288,8 +289,8 @@ public:
         ::memcpy(valuePtr(i), valuePtr0, valueSize0);
         return true;
     }
-    template <typename Key, typename Value>
-    bool update(Key key, Value value) {
+    template <typename Key, typename T>
+    bool update(Key key, T value) {
         return update(&key, sizeof(key), &value, sizeof(value));
     }
     bool isLower(const void *keyPtr0, uint16_t keySize0) const {
@@ -311,8 +312,8 @@ public:
         return isUpper(&key, sizeof(key));
     }
     void print() const {
-        ::printf("Page: headerEndOff %u recEndOff %u stubBgnOff %u "
-                 , headerEndOff(), recEndOff(), stubBgnOff());
+        ::printf("Page: %p level %u headerEndOff %u recEndOff %u stubBgnOff %u "
+                 , this, level(), headerEndOff(), recEndOff(), stubBgnOff());
         mgl_.print();
         ::printf("\n");
         for (size_t i = 0; i < numStub(); i++) {
@@ -328,8 +329,8 @@ public:
     }
     template <typename Key, typename T>
     void print() const {
-        ::printf("Page: headerEndOff %u recEndOff %u stubBgnOff %u "
-                 , headerEndOff(), recEndOff(), stubBgnOff());
+        ::printf("Page: %p level %u headerEndOff %u recEndOff %u stubBgnOff %u "
+                 , this, level(), headerEndOff(), recEndOff(), stubBgnOff());
         mgl_.print();
         ::printf("\n");
         std::stringstream ss;
@@ -372,6 +373,7 @@ public:
     bool isRoot() const { return parent() == nullptr; }
     bool isBranch() const { return header().level != 0; } /* may include root. */
     bool isLeaf() const { return header().level == 0; } /* may include root. */
+    uint16_t level() const { return header().level; }
 
     /**
      * Split a page into two pages.
@@ -535,7 +537,7 @@ public:
     template <typename T>
     ConstIterator lowerBound(T key) const { return lowerBound(&key, sizeof(T)); }
     template <typename T>
-    Iterator lowerBound(T key) const { return lowerBound(&key, sizeof(T)); }
+    Iterator lowerBound(T key) { return lowerBound(&key, sizeof(T)); }
 
     template <typename Key>
     Key minKey() const {
@@ -554,18 +556,18 @@ public:
     template <typename Key>
     Page *child(Key key) {
         assert(!empty());
-        if (isLower<Key>(key)) return leftMostChild();
-        if (isUpper<Key>(key)) return rightMostChild();
-        uint16_t i = lowerBoundStub(&key, sizeof(Key));
+        uint16_t i = searchStub(&key, sizeof(Key));
+        if (i == LOWER) return leftMostChild();
+        if (i == UPPER) return rightMostChild();
         assert(isNormalIndex(i));
         return value<Page *>(i);
     }
     template <typename Key>
     const Page *child(Key key) const {
         assert(!empty());
-        if (isLower<Key>(key)) return leftMostChild();
-        if (isUpper<Key>(key)) return rightMostChild();
-        uint16_t i = lowerBoundStub(&key, sizeof(Key));
+        uint16_t i = searchStub(&key, sizeof(Key));
+        if (i == LOWER) return leftMostChild();
+        if (i == UPPER) return rightMostChild();
         assert(isNormalIndex(i));
         return value<const Page *>(i);
     }
@@ -629,33 +631,58 @@ private:
      * Binary search in stubs.
      * RETURN:
      *   UPPER if the key is larger than all keys in the page,
-     *   LOWER if the key is less than all keys in the page,
      *   EMPTY if the page is empty.
      *   stub index for other cases (0 <= i < numStub()).
      */
     uint16_t lowerBoundStub(const void *keyPtr0, uint16_t keySize0) const {
         if (empty()) return EMPTY;
-        if (isLower(keyPtr0, keySize0)) return LOWER;
         if (isUpper(keyPtr0, keySize0)) return UPPER;
+        if (isLower(keyPtr0, keySize0)) return 0;
 
         uint16_t i0 = 0, i1 = numStub() - 1;
         while (i0 + 1 < i1) {
             uint16_t i = (i0 + i1) / 2;
             //::printf("i0 %u i1 %u i %u\n", i0, i1, i); //debug
             int r = compare_(keyPtr0, keySize0, keyPtr(i), keySize(i));
-            if (r == 0) {
-                return i;
-            } else if (r < 0) {
-                i1 = i;
-            } else {
-                i0 = i;
-            }
+            if (r == 0) return i;
+            if (r < 0) i1 = i;
+            else i0 = i;
         }
         if (compare_(keyPtr(i0), keySize(i0), keyPtr0, keySize0) < 0) {
             assert(compare_(keyPtr0, keySize0, keyPtr(i0 + 1), keySize(i0 + 1)) <= 0);
             assert(i0 + 1 == i1);
             return i1;
         } else {
+            return i0;
+        }
+    }
+    /**
+     * Search a stub.
+     * Binary search in stubs.
+     * RETURN:
+     *   UPPER if the key is larger than all keys in the page,
+     *   LOWER if the key is less than all keys in the page,
+     *   EMPTY if the page is empty.
+     *   stub index for other cases (0 <= i < numStub()).
+     */
+    uint16_t searchStub(const void *keyPtr0, uint16_t keySize0) const {
+        if (empty()) return EMPTY;
+        if (isUpper(keyPtr0, keySize0)) return UPPER;
+        if (isLower(keyPtr0, keySize0)) return LOWER;
+
+        uint16_t i0 = 0, i1 = numStub() - 1;
+        while (i0 + 1 < i1) {
+            uint16_t i = (i0 + i1) / 2;
+            int r = compare_(keyPtr0, keySize0, keyPtr(i), keySize(i));
+            if (r == 0) return i;
+            if (r < 0) i1 = i;
+            else i0 = i;
+        }
+        if (compare_(keyPtr(i1), keySize(i1), keyPtr0, keySize0) == 0) {
+            return i1;
+        } else {
+            assert(compare_(keyPtr(i0), keySize(i0), keyPtr0, keySize0) <= 0);
+            assert(compare_(keyPtr0, keySize0, keyPtr(i0 + 1), keySize(i0 + 1)) < 0);
             return i0;
         }
     }
@@ -785,13 +812,13 @@ public:
         assert(size < (2 << 16));
 
         /* Get the corresponding leaf page. */
-        Page *p = lowerBound(key);
+        Page *p = searchLeaf(key);
         assert(p->isLeaf());
 
         if (!p->canInsert(sizeof(key) + sizeof(value))) {
             p = splitLeaf(p, key);
         }
-        assert(p->canInsert(sizeof(key) + sizeof(Page *)));
+        assert(p->canInsert(sizeof(key) + sizeof(value)));
         return p->insert<Key, T>(key, value, err);
     }
 
@@ -806,6 +833,9 @@ public:
      */
     Page *splitLeaf(Page *page, const Key &key) {
         assert(page->isLeaf());
+
+        ::printf("splitLeaf: %p\n", page); /* debug */
+
         Page *parent = page->parent();
         Page *p0, *p1;
         std::tie(p0, p1) = page->split();
@@ -816,47 +846,7 @@ public:
         Key key0 = p0->minKey<Key>();
         Key key1 = p1->minKey<Key>();
 
-        UNUSED bool ret;
-        if (!parent) {
-            /* Root */
-            assert(page->empty());
-            ret = page->insert(key0, p0); assert(ret);
-            ret = page->insert(key1, p1); assert(ret);
-            p0->header().parent = page;
-            p1->header().parent = page;
-            page->header().level = 1;
-            return (less_(key, key1)) ? p0 : p1;
-        } else {
-            Page *parent0 = parent;
-            Page *parent1 = parent;
-            if (!parent->canInsert(sizeof(key) + sizeof(Page *))) {
-                parent1 = splitNonLeaf(parent, key1);
-            }
-            ret = parent0->update(key0, p0); assert(ret);
-            ret = parent1->insert(key1, p1); assert(ret);
-            p0->header().parent = parent0;
-            p1->header().parent = parent1;
-        }
-        return (less_(key, key1)) ? p0 : p1;
-    }
-    /**
-     * Split a non-leaf page.
-     * @key
-     * RETURN:
-     *  Which splitted page the given key should be inserted.
-     */
-    Page *splitNonLeaf(Page *page, const Key &key) {
-        assert(!page->isLeaf());
-        uint16_t level = page->header().level;
-        Page *parent = page->parent();
-        Page *p0, *p1;
-        std::tie(p0, p1) = page->split();
-        assert(!p0->empty());
-        assert(!p1->empty());
-        p0->header().level = level;
-        p1->header().level = level;
-        Key key0 = p0->minKey<Key>();
-        Key key1 = p1->minKey<Key>();
+        ::printf("splitted %p %p key %u %u\n", p0, p1, key0, key1); /* debug */
 
         UNUSED bool ret;
         if (!parent) {
@@ -866,15 +856,72 @@ public:
             ret = page->insert(key1, p1); assert(ret);
             p0->header().parent = page;
             p1->header().parent = page;
-            page->header().level = level + 1;
+            page->header().level = 1;
+            page->header().parent = nullptr;
         } else {
             Page *parent0 = parent;
             Page *parent1 = parent;
             if (!parent->canInsert(sizeof(key) + sizeof(Page *))) {
-                parent1 = splitNonLeaf(parent, key1);
+                std::tie(parent0, parent1) = splitNonLeaf(parent, key0, key1);
             }
+            ::printf("parents %p %p\n", parent0, parent1); /* debug */
+            parent0->print<Key, Page *>(); /* debug */
+            parent1->print<Key, Page *>(); /* debug */
+
             ret = parent0->update(key0, p0); assert(ret);
             ret = parent1->insert(key1, p1); assert(ret);
+            p0->header().parent = parent0;
+            p1->header().parent = parent1;
+        }
+        return (less_(key, key1)) ? p0 : p1;
+    }
+    /**
+     * Split a non-leaf page.
+     * @key0 first key.
+     * @key1 second key.
+     * RETURN:
+     *  1st: splitted branch page where key0 should be inserted.
+     *  2nd: splitted branch page where key1 should be inserted.
+     */
+    std::tuple<Page *, Page *> splitNonLeaf(Page *page, const Key &key0, const Key &key1) {
+        assert(!page->isLeaf());
+        uint16_t level = page->header().level;
+        ::printf("%u splitNonLeaf %p\n", level, page); /* debug */
+        Page *parent = page->parent();
+        Page *p0, *p1;
+        std::tie(p0, p1) = page->split();
+        assert(!p0->empty());
+        assert(!p1->empty());
+        p0->header().level = level;
+        p1->header().level = level;
+        Key k0 = p0->minKey<Key>();
+        Key k1 = p1->minKey<Key>();
+
+        ::printf("%u splitted: %p %p key %u %u\n", level, p0, p1, k0, k1); /* debug */
+
+        UNUSED bool ret;
+        if (!parent) {
+            /* Root */
+            assert(page->empty());
+            ret = page->insert(k0, p0); assert(ret);
+            ret = page->insert(k1, p1); assert(ret);
+            p0->header().parent = page;
+            p1->header().parent = page;
+            page->header().level = level + 1;
+            page->header().parent = nullptr;
+        } else {
+            Page *parent0 = parent;
+            Page *parent1 = parent;
+            if (!parent->canInsert(sizeof(Key) + sizeof(Page *))) {
+                std::tie(parent0, parent1) = splitNonLeaf(parent, k0, k1);
+                ::printf("%u splitNonLeaf Done parent0 %p parent1 %p\n", level, parent0, parent1); /* debug */
+            }
+            ::printf("%u try to update %p key %u %p\n", level, parent0, key0, p0); /* debug */
+            ::printf("%u try to insert %p key %u %p\n", level, parent1, key1, p1); /* debug */
+            parent0->print<Key, Page *>(); /* debug */
+            parent1->print<Key, Page *>(); /* debug */
+            ret = parent0->update(k0, p0); assert(ret);
+            ret = parent1->insert(k1, p1); assert(ret);
             p0->header().parent = parent0;
             p1->header().parent = parent1;
         }
@@ -894,7 +941,33 @@ public:
         }
 
         /* Which splitted page should the key inserted. */
-        return less_(key, key1) ? p0 : p1;
+        Page *ret0 = less_(key0, k1) ? p0 : p1;
+        Page *ret1 = less_(key1, k1) ? p0 : p1;
+        ::printf("%u p0 %p p1 %p\n", level, p0, p1); /* debug */
+        p0->print<Key, Page *>(); /* debug */
+        p1->print<Key, Page *>(); /* debug */
+        ::printf("%u end %p %p\n", level, ret0, ret1); /* debug */
+        return std::make_tuple(ret0, ret1);
+    }
+
+    void print() const {
+        ::printf("---BEGIN-----------------\n");
+        printRecursive(&root_);
+        ::printf("---END-----------------\n");
+    }
+    void printRecursive(const Page *p) const {
+        if (p->isLeaf()) {
+            p->print<Key, T>();
+            return;
+        }
+        p->print<Key, Page *>();
+
+        Page::ConstIterator it = p->cBegin();
+        while (it != p->cEnd()) {
+            const Page *child = it.value<Page *>();
+            printRecursive(child);
+            ++it;
+        }
     }
 
     class ConstIterator
@@ -963,7 +1036,7 @@ public:
             assert(it_ != pageP_->end());
             ++it_;
             if (it_ == pageP_->end()) {
-                pageP_ = nextPage(pageP_);
+                pageP_ = mapP_->nextPage(pageP_);
                 if (pageP_) {
                     it_ = pageP_->begin();
                     assert(it_ != pageP_->end());
@@ -984,7 +1057,7 @@ public:
                 return *this;
             }
             if (it_ == pageP_->begin()) {
-                pageP_ = prevPage(pageP_);
+                pageP_ = mapP_->prevPage(pageP_);
                 if (pageP_) {
                     it_ = pageP_->end();
                     --it_;
@@ -1018,12 +1091,16 @@ private:
     /**
      * Get leaf page that has a given key.
      */
-    Page *lowerBound(const Key &key) {
+    Page *searchLeaf(const Key &key) {
         Page *p = &root_;
-        while (!p->isLeaf()) p = p->child(key);
+        while (!p->isLeaf()) {
+            ::printf("searchLeaf %p\n", p); /* debug */
+            p = p->child(key);
+        }
+        ::printf("searchLeaf %p\n", p); /* debug */
         return p;
     }
-    const Page *lowerBound(const Key &key) const {
+    const Page *searchLeaf(const Key &key) const {
         const Page *p = &root_;
         while (!p->isLeaf()) p = p->child(key);
         return p;
@@ -1032,17 +1109,23 @@ private:
      * Next leaf page.
      */
     Page *nextPage(Page *page) {
+        return nextPageC(page);
+    }
+    const Page *nextPage(const Page *page) const {
+        return nextPageC(page);
+    }
+    const Page *nextPageC(const Page *page) const {
         if (!page) return leftMostPage();
         assert(page->isLeaf());
         if (page->isRoot()) return nullptr;
-        Page *p = page->parent();
+        const Page *p = page->parent();
         assert(p);
         Key key0 = page->minKey<Key>();
 
         /* Traverse ancestors. */
         Key key = key0;
         while (true) {
-            Page::Iterator it = p->lowerBound(key);
+            Page::ConstIterator it = p->lowerBound(key);
             assert(it != p->end());
             ++it;
             if (it != p->end()) {
@@ -1063,18 +1146,18 @@ private:
     /**
      * Previous leaf page.
      */
-    Page *prevPage(Page *page) {
+    const Page *prevPageC(const Page *page) const {
         if (!page) return rightMostPage();
         assert(page->isLeaf());
         if (page->isRoot()) return nullptr;
-        Page *p = page->parent();
+        const Page *p = page->parent();
         assert(p);
         Key key0 = page->minKey<Key>();
 
         /* Traverse ancestors. */
         Key key = key0;
         while (true) {
-            Page::Iterator it = p->lowerBound(key);
+            Page::ConstIterator it = p->lowerBound(key);
             assert(it != p->end());
             if (it != p->begin()) {
                 --it;
@@ -1091,6 +1174,12 @@ private:
             p = p->rightMostChild();
         }
         return p;
+    }
+    Page *prevPage(Page *page) {
+        return prevPageC(page);
+    }
+    const Page *prevPage(const Page *page) const {
+        return prevPageC(page);
     }
     /**
      * Right-most leaf page.

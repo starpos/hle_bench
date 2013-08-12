@@ -97,14 +97,30 @@ void testBtreeMap0()
     cybozu::BtreeMap<uint32_t, uint32_t> m;
 
     cybozu::util::Random<uint32_t> rand(0, 10000);
-    for (size_t i = 0; i < 1000; i++) {
-        uint32_t r = rand();
+    for (size_t i = 0; i < 50; i++) {
+        //uint32_t r = rand();
+        uint32_t r = i;
+        ::printf("try to insert %u %u\n", r, r);
         m.insert(r, r);
+        //m.print();
     }
-
-    cybozu::BtreeMap<uint32_t, uint32_t>::ConstIterator it
-        = m.begin();
-    ::printf("%u %u\n", it.key(), it.value());
+    m.print();
+    {
+        cybozu::BtreeMap<uint32_t, uint32_t>::ConstIterator it
+            = m.begin();
+        while (it != m.end()) {
+            ::printf("%u %u\n", it.key(), it.value());
+            ++it;
+        }
+    }
+    {
+        cybozu::BtreeMap<uint32_t, uint32_t>::ConstIterator it
+            = m.end();
+        while (it != m.begin()) {
+            --it;
+            ::printf("%u %u\n", it.key(), it.value());
+        }
+    }
 }
 
 int main()
