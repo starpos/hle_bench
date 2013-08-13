@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <map>
 #include "random.hpp"
 #include "btree.hpp"
 
@@ -92,7 +93,112 @@ void testPage1()
     }
 }
 
+template <typename Key, typename T>
+void checkEquality(cybozu::BtreeMap<Key, T> &m0, std::map<Key, T> &m1)
+{
+    auto it0 = m0.beginItem();
+    auto it1 = m1.begin();
+    while (it0 != m0.endItem() && it1 != m1.end()) {
+        assert(it0.key() == it1->first);
+        assert(it0.value() == it1->second);
+        ++it0;
+        ++it1;
+    }
+}
+
 void testBtreeMap0()
+{
+    cybozu::BtreeMap<uint32_t, uint32_t> m0;
+    std::map<uint32_t, uint32_t> m1;
+    cybozu::util::Random<uint32_t> rand(0, 10000);
+
+    /* Asc order insertion. */
+    for (size_t i = 0; i < 1000; i++) {
+        m0.insert(i, i);
+        m1.insert(std::make_pair(i, i));
+    }
+    checkEquality(m0, m1);
+    /* Asc order deletion. */
+    for (size_t i = 0; i < 1000; i++) {
+        UNUSED bool ret0, ret1;
+        ret0 = m0.erase(i); assert(ret0);
+        ret1 = (m1.erase(i) == 1); assert(ret1);
+    }
+    if (!m0.empty()) {
+        m0.print();
+        ::exit(1);
+    }
+    assert(m0.empty());
+    assert(m1.empty());
+    m0.clear();
+    m1.clear();
+
+    /* Desc order */
+    for (size_t i = 1000; 0 < i; i--) {
+        m0.insert(i - 1, i - 1);
+        m1.insert(std::make_pair(i - 1, i - 1));
+    }
+    checkEquality(m0, m1);
+    for (size_t i = 1000; 0 < i; i--) {
+        UNUSED bool ret0, ret1;
+        ret0 = m0.erase(i - 1); assert(ret0);
+        ret1 = (m1.erase(i - 1) == 1); assert(ret1);
+    }
+    assert(m0.empty());
+    assert(m1.empty());
+    m0.clear();
+    m1.clear();
+
+    /* Random */
+    for (size_t i = 0; i < 1000; i++) {
+        uint32_t r = rand();
+        UNUSED bool ret0, ret1;
+        ret0 = m0.insert(r, r);
+        auto pair = m1.insert(std::make_pair(r, r));
+        ret1 = pair.second;
+        assert(ret0 == ret1);
+    }
+    checkEquality(m0, m1);
+
+    /* Random insertion/deletion */
+    for (size_t i = 0; i < 1000; i++) {
+        /* Deletion */
+        uint32_t r = rand();
+        auto it0 = m0.lowerBound(r);
+        if (!it0.isEnd()) {
+            //::printf("delete %u\n", it0.key());
+            it0.erase();
+            if (!m0.isValid()) {
+                m0.print();
+                ::exit(1);
+            }
+        }
+        auto it1 = m1.lower_bound(r);
+        if (it1 != m1.end()) {
+            m1.erase(it1);
+        }
+        checkEquality(m0, m1);
+
+        /* Insertion */
+        r = rand();
+        //::printf("try to insert %u\n", r);
+        UNUSED bool ret0, ret1;
+        ret0 = m0.insert(r, r);
+        if (!m0.isValid()) {
+            m0.print();
+            ::exit(1);
+        }
+        auto pair = m1.insert(std::make_pair(r, r));
+        ret1 = pair.second;
+        assert(ret0 == ret1);
+        checkEquality(m0, m1);
+    }
+    checkEquality(m0, m1);
+
+    /* now editing */
+}
+
+void testBtreeMap1()
 {
     cybozu::BtreeMap<uint32_t, uint32_t> m;
 
@@ -106,6 +212,7 @@ void testBtreeMap0()
     }
     m.print();
 
+#if 0
     {
         cybozu::BtreeMap<uint32_t, uint32_t>::PageIterator it
             = m.beginPage();
@@ -146,6 +253,84 @@ void testBtreeMap0()
             //::printf("%d\n", it != m.beginItem());
         }
     }
+#endif
+#if 0
+    {
+        auto it = m.lowerBound(0);
+        it.erase();
+
+        m.print();
+    }
+#endif
+#if 1
+    {
+        /* Erase test. */
+        cybozu::BtreeMap<uint32_t, uint32_t>::ItemIterator it
+            = m.beginItem();
+        while (it != m.endItem()) {
+            if (it.key() % 2 == 0) {
+                ::printf("delete %u\n", it.key());
+                it.erase();
+            } else {
+                ++it;
+            }
+        }
+    }
+    {
+        cybozu::BtreeMap<uint32_t, uint32_t>::ItemIterator it
+            = m.beginItem();
+        it.erase();
+        it.erase();
+        it.erase();
+        it.erase();
+        it.erase();
+        it.erase();
+        m.print();
+    }
+#endif
+
+
+    ::printf("------------------------\n");
+    m.clear();
+    for (uint32_t i = 50; 0 < i; i--) {
+        ::printf("insert %u\n", i - 1);
+        m.insert(i - 1, i - 1);
+    }
+
+
+#if 1
+
+    ::printf("------------------------\n");
+    for (size_t i = 0; i < 100; i++) {
+        uint32_t r = rand();
+        ::printf("try to insert %u\n", r);
+        m.insert(r, r);
+        //m.print(); /* debug */
+    }
+#endif
+
+#if 1
+    for (size_t i = 0; i < 10000; i++) {
+        auto it = m.lowerBound(rand());
+        if (!it.isEnd()) {
+            ::printf("delete %u\n", it.key());
+            it.erase();
+            if (!m.isValid()) {
+                m.print();
+                ::exit(1);
+            }
+        }
+
+        uint32_t r = rand();
+        ::printf("try to insert %u\n", r);
+        m.insert(r, r);
+        if (!m.isValid()) {
+            m.print();
+            ::exit(1);
+        }
+    }
+#endif
+
 }
 
 int main()
@@ -155,4 +340,5 @@ int main()
     testPage1();
 #endif
     testBtreeMap0();
+    //testBtreeMap1();
 }

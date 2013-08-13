@@ -186,6 +186,11 @@ public:
         ::memset(page_ + header().recEndOff, 0, size);
 #endif
     }
+    bool isValid() const {
+        if (!(recEndOff() <= stubBgnOff())) return false;
+        if (!(stubBgnOff() <= PAGE_SIZE)) return false;
+        return true;
+    }
     bool empty() const {
         return stubBgnOff() == PAGE_SIZE;
     }
@@ -334,8 +339,8 @@ public:
         ::printf("%s", ss.str().c_str());
     }
     void printHeader() const {
-        ::printf("Page: %p level %u headerEndOff %u recEndOff %u stubBgnOff %u "
-                 , this, level(), headerEndOff(), recEndOff(), stubBgnOff());
+        ::printf("Page: %p level %u numRecords %zu headerEndOff %u recEndOff %u stubBgnOff %u "
+                 , this, level(), numRecords(), headerEndOff(), recEndOff(), stubBgnOff());
         mgl_.print();
         ::printf("\n");
     }
@@ -541,12 +546,41 @@ public:
         return ConstIterator(this, i);
     }
     template <typename Key>
-    ConstIterator lowerBound(const Key &key) const {
-        return lowerBound(&key, sizeof(Key));
+    Iterator lowerBound(const Key &key) { return lowerBound(&key, sizeof(Key)); }
+    template <typename Key>
+    ConstIterator lowerBound(const Key &key) const { return lowerBound(&key, sizeof(Key)); }
+
+    Iterator search(const void *keyPtr0, uint16_t keySize0,
+                    bool allowLower = false, bool allowUpper = false) {
+        uint16_t i = searchStub(keyPtr0, keySize0);
+        if (i == UPPER && !allowUpper) {
+            i = numStub() - 1; /* the last. */
+        } else if (i == LOWER && !allowLower) {
+            i = 0;
+        } else if (!isNormalIndex(i)) {
+            i = numStub(); /* the end. */
+        }
+        return Iterator(this, i);
+    }
+    ConstIterator search(const void *keyPtr0, uint16_t keySize0,
+                         bool allowLower = false, bool allowUpper = false) const {
+        uint16_t i = searchStub(keyPtr0, keySize0);
+        if (i == UPPER && !allowUpper) {
+            i = numStub() - 1; /* the last. */
+        } else if (i == LOWER && !allowLower) {
+            i = 0; /* the first. */
+        } else if (!isNormalIndex(i)) {
+            i = numStub(); /* the end. */
+        }
+        return ConstIterator(this, i);
     }
     template <typename Key>
-    Iterator lowerBound(const Key &key) {
-        return lowerBound(&key, sizeof(Key));
+    Iterator search(const Key &key, bool allowLower = false, bool allowUpper = false) {
+        return search(&key, sizeof(Key), allowLower, allowUpper);
+    }
+    template <typename Key>
+    ConstIterator search(const Key &key, bool allowLower = false, bool allowUpper = false) const {
+        return search(&key, sizeof(Key), allowLower, allowUpper);
     }
 
     template <typename Key>
@@ -827,8 +861,30 @@ public:
         root_.header().parent = nullptr;
     }
     ~BtreeMap() noexcept {
-        if (root_.isLeaf()) return;
         try {
+            clear();
+        } catch (...) {
+        }
+    }
+    bool insert(const Key &key, const T &value, BtreeError *err = nullptr) {
+        size_t size = sizeof(key) + sizeof(value);
+        assert(size < (2 << 16));
+
+        /* Get the corresponding leaf page. */
+        Page *p = searchLeaf(key);
+        assert(p->isLeaf());
+
+        if (!p->canInsert(size)) p->gc();
+        if (!p->canInsert(size)) p = splitLeaf(p, key);
+
+        assert(p->canInsert(size));
+        return p->insert<Key, T>(key, value, err);
+    }
+    /**
+     * Delete all records by more efficient way.
+     */
+    void clear() {
+        if (!root_.isLeaf()) {
             /* Delete all pages recursively. */
             Page::Iterator it = root_.begin();
             while (it != root_.end()) {
@@ -836,24 +892,12 @@ public:
                 deleteRecursive(child);
                 it.erase();
             }
-        } catch (...) {
         }
+        /* Clear the root page and set as a leaf page. */
+        root_.clear();
+        root_.header().level = 0;
+        root_.header().parent = nullptr;
     }
-    bool insert(const Key &key, const T &value, BtreeError *err = nullptr) {
-        UNUSED size_t size = sizeof(key) + sizeof(value);
-        assert(size < (2 << 16));
-
-        /* Get the corresponding leaf page. */
-        Page *p = searchLeaf(key);
-        assert(p->isLeaf());
-
-        if (!p->canInsert(sizeof(key) + sizeof(value))) {
-            p = splitLeaf(p, key);
-        }
-        assert(p->canInsert(sizeof(key) + sizeof(value)));
-        return p->insert<Key, T>(key, value, err);
-    }
-
     void print() const {
         ::printf("---BEGIN-----------------\n");
         printRecursive(&root_);
@@ -887,6 +931,7 @@ public:
     public:
         PageIterator(MapT *mapP, Page *pageP)
             : mapP_(mapP), pageP_(pageP) {
+            if (pageP) assert(pageP->isLeaf());
         }
         It &operator=(const It &rhs) {
             mapP_ = rhs.mapP_;
@@ -947,7 +992,7 @@ public:
     class ItemIterator
     {
     protected:
-        using MapT = const BtreeMap<Key, T, CompareT>;
+        using MapT = BtreeMap<Key, T, CompareT>;
         using PageIt = MapT::PageIterator;
         using ItInPage = Page::Iterator;
         using It = ItemIterator;
@@ -1002,39 +1047,21 @@ public:
         It &operator++() {
             if (pit_.isEnd()) {
                 /* Go to the first item cyclically. */
-                ++pit_;
-                it_ = pit_.page()->begin();
+                nextPage();
                 return *this;
             }
             ++it_;
-            if (it_.isEnd()) {
-                ++pit_;
-                if (!pit_.isEnd()) {
-                    it_ = pit_.page()->begin();
-                } else {
-                    /* The iterator indicates the end. */
-                }
-            }
+            if (it_.isEnd()) nextPage();
             return *this;
         }
         It &operator--() {
             if (pit_.isEnd()) {
                 /* Go to the last item cyclically. */
-                --pit_;
-                it_ = pit_.page()->end();
-                --it_;
-                assert(!it_.isEnd());
+                prevPage();
                 return *this;
             }
             if (it_.isBegin()) {
-                --pit_;
-                if (!pit_.isEnd()) {
-                    it_ = pit_.page()->end();
-                    --it_;
-                    assert(!it_.isEnd());
-                } else {
-                    /* The iterator indicates the end. */
-                }
+                prevPage();
                 return *this;
             }
             --it_;
@@ -1045,7 +1072,25 @@ public:
             pit_.print();
             it_.print();
         }
+        /**
+         * Erase the item.
+         * The iterator will indicate the next item.
+         */
+        void erase() {
+            assert(!isEnd());
+            Key lastKey = it_.key<Key>();
+            Page *page = it_.page();
+            Page::Iterator it = it_;
 
+            if (1 < it_.page()->numRecords()) {
+                it_.erase();
+                return;
+            }
+            nextPage(); /* Do not call this for empty pages. */
+            it.erase();
+            assert(page->empty());
+            mapP_->deleteEmptyPage(page, lastKey);
+        }
         const Key &key() const {
             assert(!pit_.isEnd());
             assert(!it_.isEnd());
@@ -1055,6 +1100,26 @@ public:
             assert(!pit_.isEnd());
             assert(!it_.isEnd());
             return it_.value<T>();
+        }
+
+    private:
+        void nextPage() {
+            ++pit_;
+            if (!pit_.isEnd()) {
+                it_ = pit_.page()->begin();
+            } else {
+                /* The iterator indicates the end. */
+            }
+        }
+        void prevPage() {
+            --pit_;
+            if (!pit_.isEnd()) {
+                it_ = pit_.page()->end();
+                --it_;
+                assert(!it_.isEnd());
+            } else {
+                /* The iterator indicates the end. */
+            }
         }
     };
 
@@ -1066,12 +1131,75 @@ public:
         PageIterator pit = endPage();
         return ItemIterator(this, pit, Page::Iterator(nullptr, 0));
     }
-
+    ItemIterator lowerBound(const Key &key) {
+        Page *page = searchLeaf(key);
+        assert(page);
+        PageIterator pit(this, page);
+        Page::Iterator it = page->lowerBound(key);
+        if (it.isEnd()) {
+            return ItemIterator(this, endPage(), it);
+        } else {
+            return ItemIterator(this, pit, it);
+        }
+    }
+    /**
+     * Behave like std::map::erase().
+     */
+    ItemIterator erase(ItemIterator it) {
+        it.erase();
+        return it;
+    }
+    /**
+     * Delete a record.
+     */
+    bool erase(const Key &key) {
+        ItemIterator it = lowerBound(key);
+        if (it.isEnd()) return false;
+        if (it.key() != key) return false;
+        it.erase();
+        return true;
+    }
+    bool isValid() const {
+        return isValid(&root_);
+    }
+    /**
+     * Validate.
+     *
+     * For all non-leaf pages, keys of all its children is within the range.
+     */
+    bool isValid(const Page *p) const {
+        assert(p);
+        if (p->isLeaf()) return p->isValid();
+        Page::ConstIterator it = p->begin();
+        while (it != p->end()) {
+            const Page *child = it.value<const Page *>();
+            assert(child);
+            if (!child->isValid()) {
+                ::printf("error: child is not valid.\n");
+                return false;
+            }
+            if (child->empty()) {
+                ::printf("error: child is empty.\n");
+                return false;
+            }
+            if (!isValid(child)) {
+                return false;
+            }
+            ++it;
+        }
+        return true;
+    }
+    bool empty() const {
+        return root_.isLeaf() && root_.empty();
+    }
 private:
     /**
      * Split a leaf page.
      * If the ancestors has no space for index records,
      * Split will occur recursively.
+     *
+     * @page page that will be splitted. it will be deleted.
+     * @key a key to insert.
      *
      * RETURN:
      *   Page pointer for the key to be inserted.
@@ -1089,18 +1217,18 @@ private:
         assert(!p1->empty());
         p0->header().level = 0;
         p1->header().level = 0;
-        const Key &key0 = p0->minKey<Key>();
-        const Key &key1 = p1->minKey<Key>();
+        const Key &k0 = p0->minKey<Key>();
+        const Key &k1 = p1->minKey<Key>();
 
 #if 0
-        ::printf("splitted %p %p key %u %u\n", p0, p1, key0, key1); /* debug */
+        ::printf("splitted %p %p key %u %u\n", p0, p1, k0, k1); /* debug */
 #endif
         UNUSED bool ret;
         if (!parent) {
             /* Root */
             assert(page->empty());
-            ret = page->insert(key0, p0); assert(ret);
-            ret = page->insert(key1, p1); assert(ret);
+            ret = page->insert(k0, p0); assert(ret);
+            ret = page->insert(k1, p1); assert(ret);
             p0->header().parent = page;
             p1->header().parent = page;
             page->header().level = 1;
@@ -1108,8 +1236,10 @@ private:
         } else {
             Page *parent0 = parent;
             Page *parent1 = parent;
-            if (!parent->canInsert(sizeof(key) + sizeof(Page *))) {
-                std::tie(parent0, parent1) = splitNonLeaf(parent, key0, key1);
+            //parent->print<Key, Page *>(); /* debug */
+            if (!parent->canInsert(sizeof(Key) + sizeof(Page *))) {
+                //::printf("try to call splitNonLeaf()\n"); /* debug */
+                std::tie(parent0, parent1) = splitNonLeaf(parent, k0, k1);
             }
 #if 0
             ::printf("parents %p %p\n", parent0, parent1); /* debug */
@@ -1117,15 +1247,35 @@ private:
             parent1->print<Key, Page *>(); /* debug */
 #endif
 
-            ret = parent0->update(key0, p0); assert(ret);
-            ret = parent1->insert(key1, p1); assert(ret);
+            Page::Iterator it = parent0->search(k0);
+            assert(!it.isEnd());
+            assert(it.value<Page *>() == page);
+            const Key &k2 = it.key<Key>();
+            if (k2 == k0) {
+                ret = parent0->update(k0, p0); assert(ret);
+            } else {
+                /* This is the case of left-most,
+                   or the case left-most-key in the page are deleted. */
+                ret = parent0->erase(k2); assert(ret);
+                ret = parent0->insert(k0, p0); assert(ret);
+            }
+            /* GC may be reuiqred when
+               parent0 and parent1 is the same page.
+               After GC, the insertion will success definitely.
+            */
+            if (!parent1->canInsert(sizeof(Key) + sizeof(Page *))) {
+                parent1->gc();
+            }
+            ret = parent1->insert(k1, p1); assert(ret);
             p0->header().parent = parent0;
             p1->header().parent = parent1;
+            delete page;
         }
-        return (less_(key, key1)) ? p0 : p1;
+        return (less_(key, k1)) ? p0 : p1;
     }
     /**
      * Split a non-leaf page.
+     * @page page that will be splitted. it will be deleted.
      * @key0 first key.
      * @key1 second key.
      * RETURN:
@@ -1173,13 +1323,32 @@ private:
 #if 0
             ::printf("%u try to update %p key %u %p\n", level, parent0, key0, p0); /* debug */
             ::printf("%u try to insert %p key %u %p\n", level, parent1, key1, p1); /* debug */
-#endif
             parent0->print<Key, Page *>(); /* debug */
             parent1->print<Key, Page *>(); /* debug */
-            ret = parent0->update(k0, p0); assert(ret);
+#endif
+            Page::Iterator it = parent0->search(k0);
+            assert(!it.isEnd());
+            assert(it.value<Page *>() == page);
+            const Key &k2 = it.key<Key>();
+            if (k2 == k0) {
+                ret = parent0->update(k2, p0); assert(ret);
+            } else {
+                /* This is the case of left-most,
+                   or the case left-most-key in the page are deleted. */
+                ret = parent0->erase(k2); assert(ret);
+                ret = parent0->insert(k0, p0); assert(ret);
+            }
+            /* GC may be reuiqred when
+               parent0 and parent1 is the same page.
+               After GC, the insertion will success definitely.
+            */
+            if (!parent1->canInsert(sizeof(Key) + sizeof(Page *))) {
+                parent1->gc();
+            }
             ret = parent1->insert(k1, p1); assert(ret);
             p0->header().parent = parent0;
             p1->header().parent = parent1;
+            delete page;
         }
 
         /* Update parent field of all children. */
@@ -1209,12 +1378,12 @@ private:
     }
     /**
      * Get leaf page that has a given key.
+     * RETURN:
+     *   never nullptr.
      */
     Page *searchLeaf(const Key &key) {
         Page *p = &root_;
-        while (!p->isLeaf()) {
-            p = p->child(key);
-        }
+        while (!p->isLeaf()) p = p->child(key);
         return p;
     }
     const Page *searchLeaf(const Key &key) const {
@@ -1224,13 +1393,8 @@ private:
     }
     /**
      * Next leaf page.
+     * This assumes the page is not empty.
      */
-    Page *nextPage(Page *page) {
-        return const_cast<Page *>(nextPageC(page));
-    }
-    const Page *nextPage(const Page *page) const {
-        return nextPageC(page);
-    }
     const Page *nextPageC(const Page *page) const {
         if (!page) return leftMostPage();
         assert(page->isLeaf());
@@ -1242,7 +1406,7 @@ private:
         /* Traverse ancestors. */
         Key key = key0;
         while (true) {
-            Page::ConstIterator it = p->lowerBound(key);
+            Page::ConstIterator it = p->search(key);
             assert(it != p->end());
             ++it;
             if (it != p->end()) {
@@ -1262,6 +1426,7 @@ private:
     }
     /**
      * Previous leaf page.
+     * This assumes the page is not empty.
      */
     const Page *prevPageC(const Page *page) const {
         if (!page) return rightMostPage();
@@ -1274,7 +1439,7 @@ private:
         /* Traverse ancestors. */
         Key key = key0;
         while (true) {
-            Page::ConstIterator it = p->lowerBound(key);
+            Page::ConstIterator it = p->search(key);
             assert(it != p->end());
             if (it != p->begin()) {
                 --it;
@@ -1291,6 +1456,12 @@ private:
             p = p->rightMostChild();
         }
         return p;
+    }
+    Page *nextPage(Page *page) {
+        return const_cast<Page *>(nextPageC(page));
+    }
+    const Page *nextPage(const Page *page) const {
+        return nextPageC(page);
     }
     Page *prevPage(Page *page) {
         return const_cast<Page *>(prevPageC(page));
@@ -1325,7 +1496,8 @@ private:
         return p;
     }
     /**
-     * Delete pages recursively.
+     * Delete a page and its descendants recursively.
+     * This is top down.
      */
     void deleteRecursive(Page *page) {
         //::printf("deleteRecursive: %p\n", page);
@@ -1342,6 +1514,35 @@ private:
         }
         assert(page->empty());
         delete page;
+    }
+    /**
+     * Delete an empty page.
+     * This will remove ancestors recursively if they will be also empty.
+     * Root page will not be deleted even if empty.
+     * This is bottom up.
+     *
+     * @page target page to delete.
+     * @key the last key deleted from the page.
+     */
+    void deleteEmptyPage(Page *page, const Key &key) {
+        assert(page);
+        assert(page->empty());
+        if (page->isRoot()) return;
+
+        /* Delete the correspoding record from the parent. */
+        Page *parent = page->parent();
+        assert(parent);
+        Page::Iterator it = parent->search(key);
+        assert(it.value<Page *>() == page);
+        it.erase();
+
+        delete page;
+        page = nullptr;
+
+        /* Call it recursively is necessary. */
+        if (parent->empty()) {
+            deleteEmptyPage(parent, key);
+        }
     }
 };
 
