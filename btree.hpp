@@ -250,7 +250,7 @@ public:
         return true;
     }
     template <typename Key, typename T>
-    bool insert(Key key, T value, BtreeError *err = nullptr) {
+    bool insert(const Key &key, const T &value, BtreeError *err = nullptr) {
         return insert(&key, sizeof(key), &value, sizeof(value), err);
     }
     /**
@@ -265,7 +265,7 @@ public:
         return true;
     }
     template <typename Key>
-    bool erase(Key key) {
+    bool erase(const Key &key) {
         return erase(&key, sizeof(key));
     }
     /**
@@ -290,7 +290,7 @@ public:
         return true;
     }
     template <typename Key, typename T>
-    bool update(Key key, T value) {
+    bool update(const Key &key, const T &value) {
         return update(&key, sizeof(key), &value, sizeof(value));
     }
     bool isLower(const void *keyPtr0, uint16_t keySize0) const {
@@ -299,7 +299,7 @@ public:
         return compare_(keyPtr0, keySize0, keyPtr(i0), keySize(i0)) < 0;
     }
     template <typename Key>
-    bool isLower(Key key) const {
+    bool isLower(const Key &key) const {
         return isLower(&key, sizeof(key));
     }
     bool isUpper(const void *keyPtr0, uint16_t keySize0) const {
@@ -308,14 +308,11 @@ public:
         return compare_(keyPtr(i1), keySize(i1), keyPtr0, keySize0) < 0;
     }
     template <typename Key>
-    bool isUpper(Key key) const {
+    bool isUpper(const Key &key) const {
         return isUpper(&key, sizeof(key));
     }
     void print() const {
-        ::printf("Page: %p level %u headerEndOff %u recEndOff %u stubBgnOff %u "
-                 , this, level(), headerEndOff(), recEndOff(), stubBgnOff());
-        mgl_.print();
-        ::printf("\n");
+        printHeader();
         for (size_t i = 0; i < numStub(); i++) {
             const uint8_t *p0 = reinterpret_cast<const uint8_t *>(keyPtr(i));
             const uint8_t *p1 = reinterpret_cast<const uint8_t *>(valuePtr(i));
@@ -329,15 +326,18 @@ public:
     }
     template <typename Key, typename T>
     void print() const {
-        ::printf("Page: %p level %u headerEndOff %u recEndOff %u stubBgnOff %u "
-                 , this, level(), headerEndOff(), recEndOff(), stubBgnOff());
-        mgl_.print();
-        ::printf("\n");
+        printHeader();
         std::stringstream ss;
         for (size_t i = 0; i < numStub(); i++) {
             ss << key<Key>(i) << " " << value<T>(i) << std::endl;
         }
         ::printf("%s", ss.str().c_str());
+    }
+    void printHeader() const {
+        ::printf("Page: %p level %u headerEndOff %u recEndOff %u stubBgnOff %u "
+                 , this, level(), headerEndOff(), recEndOff(), stubBgnOff());
+        mgl_.print();
+        ::printf("\n");
     }
     /**
      * Collect garbage.
@@ -447,13 +447,12 @@ public:
     {
     protected:
         friend Page;
-        Base *pageP_;
+        Base *pageP_; /* can be null. but almost member functions does not work. */
         uint16_t idx_;
 
     public:
         IteratorBase(Base *pageP, uint16_t idx)
             : pageP_(pageP), idx_(idx) {
-            assert(pageP);
         }
         It &operator=(const It &rhs) {
             pageP_ = rhs.pageP_;
@@ -474,6 +473,13 @@ public:
             --idx_;
             return *reinterpret_cast<It *>(this);
         }
+        bool isBegin() const { return idx_ == 0; }
+        bool isEnd() const { return pageP_->numStub() <= idx_; }
+
+        void print() const {
+            ::printf("Page::Iterator %p %u\n", pageP_, idx_);
+        }
+
         void *keyPtr() { return pageP_->keyPtr(idx_); }
         const void *keyPtr() const { return pageP_->keyPtr(idx_); }
         uint16_t keySize() const { return pageP_->keySize(idx_); }
@@ -481,9 +487,9 @@ public:
         const void *valuePtr() const { return pageP_->valuePtr(idx_); }
         uint16_t valueSize() const { return pageP_->valueSize(idx_); }
         template <typename Key>
-        Key key() const { return pageP_->key<Key>(idx_); }
+        const Key &key() const { return pageP_->key<Key>(idx_); }
         template <typename T>
-        T value() const { return pageP_->value<T>(idx_); }
+        const T &value() const { return pageP_->value<T>(idx_); }
     };
     class ConstIterator : public IteratorBase<const Page, ConstIterator>
     {
@@ -534,18 +540,22 @@ public:
         if (!isNormalIndex(i)) i = numStub();
         return ConstIterator(this, i);
     }
-    template <typename T>
-    ConstIterator lowerBound(T key) const { return lowerBound(&key, sizeof(T)); }
-    template <typename T>
-    Iterator lowerBound(T key) { return lowerBound(&key, sizeof(T)); }
+    template <typename Key>
+    ConstIterator lowerBound(const Key &key) const {
+        return lowerBound(&key, sizeof(Key));
+    }
+    template <typename Key>
+    Iterator lowerBound(const Key &key) {
+        return lowerBound(&key, sizeof(Key));
+    }
 
     template <typename Key>
-    Key minKey() const {
+    const Key &minKey() const {
         assert(!empty());
         return key<Key>(0);
     }
     template <typename Key>
-    Key maxKey() const {
+    const Key &maxKey() const {
         assert(!empty());
         return key<Key>(numStub() - 1);
     }
@@ -554,7 +564,7 @@ public:
      * These functions are used for non-leaf pages.
      */
     template <typename Key>
-    Page *child(Key key) {
+    Page *child(const Key &key) {
         assert(!empty());
         uint16_t i = searchStub(&key, sizeof(Key));
         if (i == LOWER) return leftMostChild();
@@ -563,7 +573,7 @@ public:
         return value<Page *>(i);
     }
     template <typename Key>
-    const Page *child(Key key) const {
+    const Page *child(const Key &key) const {
         assert(!empty());
         uint16_t i = searchStub(&key, sizeof(Key));
         if (i == LOWER) return leftMostChild();
@@ -598,6 +608,7 @@ private:
         return st[i];
     }
     const struct stub &stub(size_t i) const {
+        //::printf("i %zu numStub %u\n", i, numStub()); /* debug */
         assert(i < numStub());
         const struct stub *st = reinterpret_cast<const struct stub *>(page_ + stubBgnOff());
         return st[i];
@@ -621,6 +632,9 @@ private:
         return reinterpret_cast<const void *>(page_ + stub(i).off + stub(i).keySize);
     }
     uint16_t valueSize(size_t i) const { return stub(i).valueSize; }
+    /**
+     * Swap page_.
+     */
     void swap(Page &rhs) {
         char *page = page_;
         page_ = rhs.page_;
@@ -628,7 +642,10 @@ private:
     }
     /**
      * lowerBound function.
+     * miminum key(i) where a specified key <= key(i)
+     *
      * Binary search in stubs.
+     *
      * RETURN:
      *   UPPER if the key is larger than all keys in the page,
      *   EMPTY if the page is empty.
@@ -658,7 +675,10 @@ private:
     }
     /**
      * Search a stub.
+     * key(i) <= a specified key < key(i + 1)
+     *
      * Binary search in stubs.
+     *
      * RETURN:
      *   UPPER if the key is larger than all keys in the page,
      *   LOWER if the key is less than all keys in the page,
@@ -686,6 +706,9 @@ private:
             return i0;
         }
     }
+    /**
+     * Erase a stub.
+     */
     void eraseStub(size_t i) {
         assert(i < numStub());
         for (uint16_t j = i; 0 < j; j--) {
@@ -694,17 +717,20 @@ private:
         header().stubBgnOff += sizeof(struct stub);
     }
     template <typename Key>
-    Key key(size_t i) const {
+    const Key &key(size_t i) const {
         assert(sizeof(Key) == keySize(i));
         return *reinterpret_cast<const Key *>(keyPtr(i));
     }
     template <typename T>
-    T value(size_t i) const {
+    const T &value(size_t i) const {
         assert(sizeof(T) == valueSize(i));
         return *reinterpret_cast<const T *>(valuePtr(i));
     }
 };
 
+/**
+ * A wrapper of Page class for fixed key and value type.
+ */
 template <typename Key, typename T,
           typename CompareT = std::less<Key> >
 class PageX : public Page
@@ -805,6 +831,7 @@ public:
         /* TODO: remove all pages except for root. */
 
 
+
         /* now editing */
     }
     bool insert(const Key &key, const T &value, BtreeError *err = nullptr) {
@@ -833,9 +860,9 @@ public:
      */
     Page *splitLeaf(Page *page, const Key &key) {
         assert(page->isLeaf());
-
+#if 0
         ::printf("splitLeaf: %p\n", page); /* debug */
-
+#endif
         Page *parent = page->parent();
         Page *p0, *p1;
         std::tie(p0, p1) = page->split();
@@ -843,11 +870,12 @@ public:
         assert(!p1->empty());
         p0->header().level = 0;
         p1->header().level = 0;
-        Key key0 = p0->minKey<Key>();
-        Key key1 = p1->minKey<Key>();
+        const Key &key0 = p0->minKey<Key>();
+        const Key &key1 = p1->minKey<Key>();
 
+#if 0
         ::printf("splitted %p %p key %u %u\n", p0, p1, key0, key1); /* debug */
-
+#endif
         UNUSED bool ret;
         if (!parent) {
             /* Root */
@@ -864,9 +892,11 @@ public:
             if (!parent->canInsert(sizeof(key) + sizeof(Page *))) {
                 std::tie(parent0, parent1) = splitNonLeaf(parent, key0, key1);
             }
+#if 0
             ::printf("parents %p %p\n", parent0, parent1); /* debug */
             parent0->print<Key, Page *>(); /* debug */
             parent1->print<Key, Page *>(); /* debug */
+#endif
 
             ret = parent0->update(key0, p0); assert(ret);
             ret = parent1->insert(key1, p1); assert(ret);
@@ -886,7 +916,9 @@ public:
     std::tuple<Page *, Page *> splitNonLeaf(Page *page, const Key &key0, const Key &key1) {
         assert(!page->isLeaf());
         uint16_t level = page->header().level;
+#if 0
         ::printf("%u splitNonLeaf %p\n", level, page); /* debug */
+#endif
         Page *parent = page->parent();
         Page *p0, *p1;
         std::tie(p0, p1) = page->split();
@@ -894,11 +926,12 @@ public:
         assert(!p1->empty());
         p0->header().level = level;
         p1->header().level = level;
-        Key k0 = p0->minKey<Key>();
-        Key k1 = p1->minKey<Key>();
+        const Key &k0 = p0->minKey<Key>();
+        const Key &k1 = p1->minKey<Key>();
 
+#if 0
         ::printf("%u splitted: %p %p key %u %u\n", level, p0, p1, k0, k1); /* debug */
-
+#endif
         UNUSED bool ret;
         if (!parent) {
             /* Root */
@@ -914,10 +947,14 @@ public:
             Page *parent1 = parent;
             if (!parent->canInsert(sizeof(Key) + sizeof(Page *))) {
                 std::tie(parent0, parent1) = splitNonLeaf(parent, k0, k1);
+#if 0
                 ::printf("%u splitNonLeaf Done parent0 %p parent1 %p\n", level, parent0, parent1); /* debug */
+#endif
             }
+#if 0
             ::printf("%u try to update %p key %u %p\n", level, parent0, key0, p0); /* debug */
             ::printf("%u try to insert %p key %u %p\n", level, parent1, key1, p1); /* debug */
+#endif
             parent0->print<Key, Page *>(); /* debug */
             parent1->print<Key, Page *>(); /* debug */
             ret = parent0->update(k0, p0); assert(ret);
@@ -943,10 +980,12 @@ public:
         /* Which splitted page should the key inserted. */
         Page *ret0 = less_(key0, k1) ? p0 : p1;
         Page *ret1 = less_(key1, k1) ? p0 : p1;
+#if 0
         ::printf("%u p0 %p p1 %p\n", level, p0, p1); /* debug */
         p0->print<Key, Page *>(); /* debug */
         p1->print<Key, Page *>(); /* debug */
         ::printf("%u end %p %p\n", level, ret0, ret1); /* debug */
+#endif
         return std::make_tuple(ret0, ret1);
     }
 
@@ -970,121 +1009,191 @@ public:
         }
     }
 
-    class ConstIterator
+    class PageIterator
+    {
+    protected:
+        using MapT = BtreeMap<Key, T, CompareT>;
+        using It = PageIterator;
+        MapT *mapP_;
+        Page *pageP_; /* Nullptr indicates the end. */
+    public:
+        PageIterator(MapT *mapP, Page *pageP)
+            : mapP_(mapP), pageP_(pageP) {
+        }
+        It &operator=(const It &rhs) {
+            mapP_ = rhs.mapP_;
+            pageP_ = rhs.pageP_;
+            return *this;
+        }
+        bool operator==(const It &rhs) const { return pageP_ == rhs.pageP_; }
+        bool operator!=(const It &rhs) const { return pageP_ != rhs.pageP_; }
+        bool operator<(const It &rhs) const {
+            if (!pageP_ && !rhs.pageP_) return false; /* both end. */
+            if (pageP_ && rhs.pageP_) { /* both valid. */
+                Page *p0 = pageP_;
+                Page *p1 = rhs.pageP_;
+                return mapP_->less_(p0->minKey<Key>(), p1->minKey<Key>());
+            }
+            return pageP_ != nullptr;
+        }
+        bool operator<=(const It &rhs) const { return *this == rhs || *this < rhs; }
+        bool operator>(const It &rhs) const { return !(*this <= rhs); }
+        bool operator>=(const It &rhs) const { return !(*this < rhs); }
+        It &operator++() {
+            if (pageP_) {
+                pageP_ = mapP_->nextPage(pageP_);
+            } else {
+                /* Cyclic */
+                pageP_ = mapP_->leftMostPage();
+            }
+            return *this;
+        }
+        It &operator--() {
+            if (pageP_) {
+                pageP_ = mapP_->prevPage(pageP_);
+            } else {
+                /* Cyclic */
+                pageP_ = mapP_->rightMostPage();
+            }
+            return *this;
+        }
+        bool isEnd() const { return pageP_ == nullptr; }
+        void print() const {
+            ::printf("PageIterator %p\n", pageP_);
+        }
+
+        const Page *page() const { return pageP_; }
+        Page *page() { return pageP_; }
+    };
+
+    PageIterator beginPage() {
+        return PageIterator(this, leftMostPage());
+    }
+    PageIterator endPage() {
+        return PageIterator(this, nullptr);
+    }
+
+    class ItemIterator
     {
     protected:
         using MapT = const BtreeMap<Key, T, CompareT>;
-        using PageIt = Page::ConstIterator;
-        using It = ConstIterator;
+        using PageIt = MapT::PageIterator;
+        using ItInPage = Page::Iterator;
+        using It = ItemIterator;
 
         MapT *mapP_; /* must not be nullptr. */
-        const Page *pageP_; /* nullptr indicates the end. */
-        Page::ConstIterator it_; /* no meaning if pageP_ is nullptr. */
+        PageIt pit_;
+        ItInPage it_; /* no meaning if pageIt_ indicates the end. */
 
     public:
-        ConstIterator(MapT *mapP, const Page *pageP, PageIt it)
-            : mapP_(mapP), pageP_(pageP), it_(it) {
+        ItemIterator(MapT *mapP, PageIt pit, ItInPage it)
+            : mapP_(mapP), pit_(pit), it_(it) {
             assert(mapP);
         }
         It &operator=(const It &rhs) {
             mapP_ = rhs.mapP_;
+            pit_ = rhs.pit_;
             it_ = rhs.it_;
             return *this;
         }
         bool operator==(const It &rhs) const {
-            if (!pageP_ && !rhs.pageP_) return true; /* both end. */
-            if (pageP_ && rhs.pageP_) { /* both valid. */
-                return pageP_ == rhs.pageP_ && it_ == rhs.it_;
+            if (pit_.isEnd() && rhs.pit_.isEnd()) {
+                /* Both end. */
+                return true;
+            }
+            if (!pit_.isEnd() && !rhs.pit_.isEnd()) {
+                /* Both valid. */
+                return pit_ == rhs.pit_ && it_ == rhs.it_;
             }
             return false;
         }
         bool operator!=(const It &rhs) const {
-            return !operator==(rhs);
+            return !(*this == rhs);
         }
         bool operator<(const It &rhs) const {
-            if (!pageP_ && !rhs.pageP_) return false; /* both end. */
-            if (pageP_ && rhs.pageP_) { /* both valid. */
-                if (pageP_ == rhs.pageP_) return it_ < rhs.it_;
-                assert(!pageP_->empty());
-                assert(!rhs.pageP_->empty());
-                Page *p0 = pageP_;
-                Page *p1 = rhs.pageP_;
-                return mapP_->less_(p1->minKey<Key>(), p1->minKey<Key>());
+            if (pit_.isEnd() && rhs.pit_.isEnd()) {
+                /* Both end. */
+                return false;
             }
-            return pageP_ != nullptr;
-        }
-        bool operator<=(const It &rhs) const {
-            return *this < rhs || *this == rhs;
-        }
-        bool operator>(const It &rhs) const {
-            return !(*this <= rhs);
-        }
-        bool operator>=(const It &rhs) const {
-            return !(*this < rhs);
-        }
-        It &operator++() {
-            if (!pageP_) {
-                /* Cyclic */
-                pageP_ = mapP_->leftMostPage();
-                if (!pageP_->empty()) {
-                    it_ = pageP_->begin();
+            if (!pit_.isEnd() && !rhs.pit_.isEnd()) {
+                /* Both valid. */
+                if (pit_ == rhs.pit_) {
+                    return it_ < rhs.it_;
                 } else {
-                    pageP_ = nullptr;
+                    return pit_ < rhs.pit_;
                 }
+            }
+            return !pit_.isEnd();
+        }
+        bool operator<=(const It &rhs) const { return *this == rhs || *this < rhs; }
+        bool operator>(const It &rhs) const { return !(*this <= rhs); }
+        bool operator>=(const It &rhs) const { return !(*this < rhs); }
+        It &operator++() {
+            if (pit_.isEnd()) {
+                /* Go to the first item cyclically. */
+                ++pit_;
+                it_ = pit_.page()->begin();
                 return *this;
             }
-            assert(it_ != pageP_->end());
             ++it_;
-            if (it_ == pageP_->end()) {
-                pageP_ = mapP_->nextPage(pageP_);
-                if (pageP_) {
-                    it_ = pageP_->begin();
-                    assert(it_ != pageP_->end());
+            if (it_.isEnd()) {
+                ++pit_;
+                if (!pit_.isEnd()) {
+                    it_ = pit_.page()->begin();
+                } else {
+                    /* The iterator indicates the end. */
                 }
             }
             return *this;
         }
         It &operator--() {
-            if (!pageP_) {
-                /* Cyclic */
-                pageP_ = mapP_->rightMostPage();
-                if (!pageP_->empty()) {
-                    it_ = pageP_->end();
-                    --it_;
-                } else {
-                    pageP_ = nullptr;
-                }
+            if (pit_.isEnd()) {
+                /* Go to the last item cyclically. */
+                --pit_;
+                it_ = pit_.page()->end();
+                --it_;
+                assert(!it_.isEnd());
                 return *this;
             }
-            if (it_ == pageP_->begin()) {
-                pageP_ = mapP_->prevPage(pageP_);
-                if (pageP_) {
-                    it_ = pageP_->end();
+            if (it_.isBegin()) {
+                --pit_;
+                if (!pit_.isEnd()) {
+                    it_ = pit_.page()->end();
                     --it_;
+                    assert(!it_.isEnd());
+                } else {
+                    /* The iterator indicates the end. */
                 }
                 return *this;
             }
             --it_;
             return *this;
         }
+        bool isEnd() const { return pit_.isEnd(); }
+        void print() const {
+            pit_.print();
+            it_.print();
+        }
 
-        Key key() const { return it_.key<Key>(); }
-        T value() const { return it_.value<T>(); }
+        const Key &key() const {
+            assert(!pit_.isEnd());
+            assert(!it_.isEnd());
+            return it_.key<Key>();
+        }
+        const T &value() const {
+            assert(!pit_.isEnd());
+            assert(!it_.isEnd());
+            return it_.value<T>();
+        }
     };
 
-    ConstIterator begin() const {
-        const Page *page = leftMostPage();
-        return ConstIterator(this, page, page->cBegin());
+    ItemIterator begin() {
+        PageIterator pit = beginPage();
+        return ItemIterator(this, pit, pit.page()->begin());
     }
-    ConstIterator end() const {
-        const Page *page = rightMostPage(); /* no meaning. */
-        return ConstIterator(this, nullptr, page->cEnd());
-    }
-    ConstIterator cBegin() const {
-        return begin();
-    }
-    ConstIterator cEnd() const {
-        return end();
+    ItemIterator end() {
+        PageIterator pit = endPage();
+        return ItemIterator(this, pit, Page::Iterator(nullptr, 0));
     }
 
 private:
@@ -1094,10 +1203,8 @@ private:
     Page *searchLeaf(const Key &key) {
         Page *p = &root_;
         while (!p->isLeaf()) {
-            ::printf("searchLeaf %p\n", p); /* debug */
             p = p->child(key);
         }
-        ::printf("searchLeaf %p\n", p); /* debug */
         return p;
     }
     const Page *searchLeaf(const Key &key) const {
@@ -1109,7 +1216,7 @@ private:
      * Next leaf page.
      */
     Page *nextPage(Page *page) {
-        return nextPageC(page);
+        return const_cast<Page *>(nextPageC(page));
     }
     const Page *nextPage(const Page *page) const {
         return nextPageC(page);
@@ -1176,7 +1283,7 @@ private:
         return p;
     }
     Page *prevPage(Page *page) {
-        return prevPageC(page);
+        return const_cast<Page *>(prevPageC(page));
     }
     const Page *prevPage(const Page *page) const {
         return prevPageC(page);

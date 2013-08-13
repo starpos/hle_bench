@@ -105,20 +105,45 @@ void testBtreeMap0()
         //m.print();
     }
     m.print();
+
     {
-        cybozu::BtreeMap<uint32_t, uint32_t>::ConstIterator it
+        cybozu::BtreeMap<uint32_t, uint32_t>::PageIterator it
+            = m.beginPage();
+        while (it != m.endPage()) {
+            ::printf("%p\n", it.page());
+            ++it;
+        }
+    }
+    ::printf("\n");
+    {
+        cybozu::BtreeMap<uint32_t, uint32_t>::PageIterator it
+            = m.endPage();
+        while (it != m.beginPage()) {
+            --it;
+            ::printf("%p\n", it.page());
+        }
+    }
+    ::printf("\n");
+    {
+        cybozu::BtreeMap<uint32_t, uint32_t>::ItemIterator it
             = m.begin();
         while (it != m.end()) {
+            assert(!it.isEnd());
             ::printf("%u %u\n", it.key(), it.value());
             ++it;
         }
     }
+    ::printf("\n");
     {
-        cybozu::BtreeMap<uint32_t, uint32_t>::ConstIterator it
+        cybozu::BtreeMap<uint32_t, uint32_t>::ItemIterator it
             = m.end();
         while (it != m.begin()) {
             --it;
+            assert(!it.isEnd());
             ::printf("%u %u\n", it.key(), it.value());
+            //it.print();
+            //m.begin().print();
+            //::printf("%d\n", it != m.begin());
         }
     }
 }
