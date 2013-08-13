@@ -126,8 +126,8 @@ void testBtreeMap0()
     ::printf("\n");
     {
         cybozu::BtreeMap<uint32_t, uint32_t>::ItemIterator it
-            = m.begin();
-        while (it != m.end()) {
+            = m.beginItem();
+        while (it != m.endItem()) {
             assert(!it.isEnd());
             ::printf("%u %u\n", it.key(), it.value());
             ++it;
@@ -136,14 +136,14 @@ void testBtreeMap0()
     ::printf("\n");
     {
         cybozu::BtreeMap<uint32_t, uint32_t>::ItemIterator it
-            = m.end();
-        while (it != m.begin()) {
+            = m.endItem();
+        while (it != m.beginItem()) {
             --it;
             assert(!it.isEnd());
             ::printf("%u %u\n", it.key(), it.value());
             //it.print();
-            //m.begin().print();
-            //::printf("%d\n", it != m.begin());
+            //m.beginItem().print();
+            //::printf("%d\n", it != m.beginItem());
         }
     }
 }
