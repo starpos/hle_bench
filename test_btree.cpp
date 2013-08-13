@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <iostream>
 #include <map>
 #include "random.hpp"
 #include "btree.hpp"
@@ -96,11 +97,26 @@ void testPage1()
 template <typename Key, typename T>
 void checkEquality(cybozu::BtreeMap<Key, T> &m0, std::map<Key, T> &m1)
 {
+    if (m0.size() != m1.size()) {
+        ::printf("size different: %zu %zu\n", m0.size(), m1.size());
+        m0.print();
+        ::exit(1);
+    }
     auto it0 = m0.beginItem();
     auto it1 = m1.begin();
     while (it0 != m0.endItem() && it1 != m1.end()) {
-        assert(it0.key() == it1->first);
-        assert(it0.value() == it1->second);
+        if (it0.key() != it1->first) {
+            std::cout << "key different: "
+                      << it0.key() << " " << it1->first << std::endl;
+            m0.print();
+            ::exit(1);
+        }
+        if (it0.value() != it1->second) {
+            std::cout << "value different: "
+                      << it0.value() << " " << it1->second << std::endl;
+            m0.print();
+            ::exit(1);
+        }
         ++it0;
         ++it1;
     }
@@ -113,13 +129,18 @@ void testBtreeMap0()
     cybozu::util::Random<uint32_t> rand(0, 10000);
 
     /* Asc order insertion. */
-    for (size_t i = 0; i < 1000; i++) {
+    for (size_t i = 0; i < 100; i++) {
         m0.insert(i, i);
         m1.insert(std::make_pair(i, i));
+
+        if (!m0.isValid()) {
+            m0.print();
+            ::exit(1);
+        }
     }
     checkEquality(m0, m1);
     /* Asc order deletion. */
-    for (size_t i = 0; i < 1000; i++) {
+    for (size_t i = 0; i < 100; i++) {
         UNUSED bool ret0, ret1;
         ret0 = m0.erase(i); assert(ret0);
         ret1 = (m1.erase(i) == 1); assert(ret1);
@@ -161,21 +182,30 @@ void testBtreeMap0()
     checkEquality(m0, m1);
 
     /* Random insertion/deletion */
-    for (size_t i = 0; i < 1000; i++) {
+    for (size_t i = 0; i < 10000; i++) {
         /* Deletion */
         uint32_t r = rand();
         auto it0 = m0.lowerBound(r);
-        if (!it0.isEnd()) {
-            //::printf("delete %u\n", it0.key());
+        auto it1 = m1.lower_bound(r);
+        if (!it0.isEnd() && it1 != m1.end()) {
+            //::printf("delete %u %u\n", it0.key(), it1->first);
             it0.erase();
             if (!m0.isValid()) {
                 m0.print();
                 ::exit(1);
             }
-        }
-        auto it1 = m1.lower_bound(r);
-        if (it1 != m1.end()) {
             m1.erase(it1);
+        } else {
+            if (it0.isEnd() != (it1 == m1.end())) {
+                ::printf("search %u\n", r);
+                if (!it0.isEnd()) {
+                    ::printf("btreemap: %u\n", it0.key());
+                } else {
+                    ::printf("std::map: %u\n", it1->first);
+                }
+                m0.print();
+                ::exit(1);
+            }
         }
         checkEquality(m0, m1);
 

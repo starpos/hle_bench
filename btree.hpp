@@ -180,10 +180,12 @@ public:
     void clear() {
         header().recEndOff = headerEndOff();
         header().stubBgnOff = PAGE_SIZE;
+        header().parent = nullptr;
+        header().level = uint16_t(-1); /* POISON value. You must set it by yourself. */
 #if DEBUG
-        /* zero-clear */
+        /* zero-clear except for header area. */
         uint16_t size = PAGE_SIZE - headerEndOff();
-        ::memset(page_ + header().recEndOff, 0, size);
+        ::memset(page_ + headerEndOff(), 0, size);
 #endif
     }
     bool isValid() const {
@@ -339,8 +341,8 @@ public:
         ::printf("%s", ss.str().c_str());
     }
     void printHeader() const {
-        ::printf("Page: %p level %u numRecords %zu headerEndOff %u recEndOff %u stubBgnOff %u "
-                 , this, level(), numRecords(), headerEndOff(), recEndOff(), stubBgnOff());
+        ::printf("Page: %p level %u numRecords %zu headerEndOff %u recEndOff %u stubBgnOff %u parent %p"
+                 , this, level(), numRecords(), headerEndOff(), recEndOff(), stubBgnOff(), parent());
         mgl_.print();
         ::printf("\n");
     }
@@ -354,7 +356,17 @@ public:
             ret = p.insert(keyPtr(i), keySize(i), valuePtr(i), valueSize(i));
             assert(ret);
         }
+        p.header().parent = header().parent;
+        p.header().level = header().level;
         swap(p);
+
+#if 0
+        /* debug */
+        ::printf("-----gcbgn------\n");
+        print();
+        p.print();
+        ::printf("-----gcend------\n");
+#endif
     }
     static char *allocPageStatic() {
         void *p;
@@ -381,8 +393,18 @@ public:
     uint16_t level() const { return header().level; }
 
     /**
+     * Swap page_.
+     */
+    void swap(Page &rhs) {
+        char *page = page_;
+        page_ = rhs.page_;
+        rhs.page_ = page;
+    }
+
+    /**
      * Split a page into two pages.
      * The page will be cleared.
+     * You must set parent field by yourself after calling this.
      */
     std::pair<Page *, Page *> split(bool isHalfAndHalf = true) {
         Page *p0 = new Page(compare_);
@@ -666,14 +688,6 @@ private:
         return reinterpret_cast<const void *>(page_ + stub(i).off + stub(i).keySize);
     }
     uint16_t valueSize(size_t i) const { return stub(i).valueSize; }
-    /**
-     * Swap page_.
-     */
-    void swap(Page &rhs) {
-        char *page = page_;
-        page_ = rhs.page_;
-        rhs.page_ = page;
-    }
     /**
      * lowerBound function.
      * miminum key(i) where a specified key <= key(i)
@@ -979,11 +993,28 @@ public:
         Page *page() { return pageP_; }
     };
 
+    class ConstPageIterator : public PageIterator
+    {
+    private:
+        using MapT = BtreeMap<Key, T, CompareT>;
+        using It = ConstPageIterator;
+    public:
+        ConstPageIterator(const MapT *mapP, const Page *pageP)
+            : PageIterator(const_cast<MapT *>(mapP), const_cast<Page *>(pageP)) {
+        }
+    };
+
     PageIterator beginPage() {
         return PageIterator(this, leftMostPage());
     }
     PageIterator endPage() {
         return PageIterator(this, nullptr);
+    }
+    ConstPageIterator beginPage() const {
+        return ConstPageIterator(this, leftMostPage());
+    }
+    ConstPageIterator endPage() const {
+        return ConstPageIterator(this, nullptr);
     }
 
     /**
@@ -1090,6 +1121,7 @@ public:
             it.erase();
             assert(page->empty());
             mapP_->deleteEmptyPage(page, lastKey);
+            mapP_->liftUp();
         }
         const Key &key() const {
             assert(!pit_.isEnd());
@@ -1134,8 +1166,18 @@ public:
     ItemIterator lowerBound(const Key &key) {
         Page *page = searchLeaf(key);
         assert(page);
-        PageIterator pit(this, page);
         Page::Iterator it = page->lowerBound(key);
+        if (it.isEnd()) {
+            /* The record is the first one of the next page
+               if the next page exists. */
+            page = nextPage(page);
+            if (page) {
+                it = page->lowerBound(key);
+            } else {
+                /* Not found */
+            }
+        }
+        PageIterator pit(this, page);
         if (it.isEnd()) {
             return ItemIterator(this, endPage(), it);
         } else {
@@ -1170,10 +1212,19 @@ public:
     bool isValid(const Page *p) const {
         assert(p);
         if (p->isLeaf()) return p->isValid();
+        uint16_t level = p->level();
         Page::ConstIterator it = p->begin();
         while (it != p->end()) {
             const Page *child = it.value<const Page *>();
             assert(child);
+            if (!(child->level() + 1 == level)) {
+                ::printf("error: child level is not valid.\n");
+                return false;
+            }
+            if (!(child->parent() == p)) {
+                ::printf("error: child's parent is not valid.\n");
+                return false;
+            }
             if (!child->isValid()) {
                 ::printf("error: child is not valid.\n");
                 return false;
@@ -1192,6 +1243,17 @@ public:
     bool empty() const {
         return root_.isLeaf() && root_.empty();
     }
+    size_t size() const {
+        size_t total = 0;
+        ConstPageIterator it = beginPage();
+        if (it != endPage()) {
+            ::printf("size: %zu\n", it.page()->numRecords());
+            total += it.page()->numRecords();
+            ++it;
+        }
+        ::printf("totalsize: %zu\n", total);
+        return total;
+    }
 private:
     /**
      * Split a leaf page.
@@ -1208,9 +1270,12 @@ private:
     Page *splitLeaf(Page *page, const Key &key) {
         assert(page->isLeaf());
 #if 0
-        ::printf("splitLeaf: %p\n", page); /* debug */
+        ::printf("splitLeaf: %p (level %u)\n", page, page->level()); /* debug */
+        page->print<Key, T>();
 #endif
+
         Page *parent = page->parent();
+        //::printf("parent %p\n", parent); /* debug */
         Page *p0, *p1;
         std::tie(p0, p1) = page->split();
         assert(!p0->empty());
@@ -1226,18 +1291,24 @@ private:
         UNUSED bool ret;
         if (!parent) {
             /* Root */
+            assert(page == &root_);
+            //::printf("page %p\n", page); /* debug */
             assert(page->empty());
             ret = page->insert(k0, p0); assert(ret);
             ret = page->insert(k1, p1); assert(ret);
             p0->header().parent = page;
             p1->header().parent = page;
             page->header().level = 1;
-            page->header().parent = nullptr;
+            //::printf("root level %u (splitLeaf)\n", page->level()); /* debug */
         } else {
             Page *parent0 = parent;
             Page *parent1 = parent;
+            const uint16_t recSize = sizeof(Key) + sizeof(Page *);
             //parent->print<Key, Page *>(); /* debug */
-            if (!parent->canInsert(sizeof(Key) + sizeof(Page *))) {
+            if (!parent->canInsert(recSize)) {
+                parent->gc();
+            }
+            if (!parent->canInsert(recSize)) {
                 //::printf("try to call splitNonLeaf()\n"); /* debug */
                 std::tie(parent0, parent1) = splitNonLeaf(parent, k0, k1);
             }
@@ -1263,7 +1334,7 @@ private:
                parent0 and parent1 is the same page.
                After GC, the insertion will success definitely.
             */
-            if (!parent1->canInsert(sizeof(Key) + sizeof(Page *))) {
+            if (!parent1->canInsert(recSize)) {
                 parent1->gc();
             }
             ret = parent1->insert(k1, p1); assert(ret);
@@ -1310,10 +1381,14 @@ private:
             p0->header().parent = page;
             p1->header().parent = page;
             page->header().level = level + 1;
+            //::printf("root level %u (splitNonLeaf)\n", page->level()); /* debug */
             page->header().parent = nullptr;
         } else {
             Page *parent0 = parent;
             Page *parent1 = parent;
+            if (!parent->canInsert(sizeof(Key) + sizeof(Page *))) {
+                parent->gc();
+            }
             if (!parent->canInsert(sizeof(Key) + sizeof(Page *))) {
                 std::tie(parent0, parent1) = splitNonLeaf(parent, k0, k1);
 #if 0
@@ -1542,6 +1617,31 @@ private:
         /* Call it recursively is necessary. */
         if (parent->empty()) {
             deleteEmptyPage(parent, key);
+        }
+    }
+    /**
+     * Shrink the depth if possible.
+     */
+    void liftUp() {
+        //::printf("liftUp\n"); /* debug */
+        Page *p = &root_;
+        while (!p->isLeaf() && p->numRecords() == 1) {
+            UNUSED uint16_t level = p->level();
+            Page *child = p->leftMostChild();
+            p->swap(*child);
+            p->header().parent = nullptr;
+            assert(level == p->level() + 1);
+            delete child;
+        }
+        if (!p->isLeaf()) {
+            /* Update childrens' parent to the root */
+            Page::Iterator it = p->begin();
+            while (it != p->end()) {
+                Page *child = it.value<Page *>();
+                assert(child);
+                child->header().parent = p;
+                ++it;
+            }
         }
     }
 };
