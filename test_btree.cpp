@@ -97,11 +97,13 @@ void testPage1()
 template <typename Key, typename T>
 void checkEquality(cybozu::BtreeMap<Key, T> &m0, std::map<Key, T> &m1)
 {
+    //::printf("checkEquality begin\n");
     if (m0.size() != m1.size()) {
-        ::printf("size different: %zu %zu\n", m0.size(), m1.size());
+        //::printf("size different: %zu %zu\n", m0.size(), m1.size());
         m0.print();
         ::exit(1);
     }
+    //::printf("checkEquality mid0\n");
     auto it0 = m0.beginItem();
     auto it1 = m1.begin();
     while (it0 != m0.endItem() && it1 != m1.end()) {
@@ -120,6 +122,7 @@ void checkEquality(cybozu::BtreeMap<Key, T> &m0, std::map<Key, T> &m1)
         ++it0;
         ++it1;
     }
+    //::printf("checkEquality end\n");
 }
 
 void testBtreeMap0()
@@ -183,13 +186,17 @@ void testBtreeMap0()
 
     /* Random insertion/deletion */
     for (size_t i = 0; i < 10000; i++) {
+        if (i % 100 == 0) {
+            ::printf("loop %zu\n", i);
+        }
         /* Deletion */
         uint32_t r = rand();
         auto it0 = m0.lowerBound(r);
         auto it1 = m1.lower_bound(r);
         if (!it0.isEnd() && it1 != m1.end()) {
-            //::printf("delete %u %u\n", it0.key(), it1->first);
+            ::printf("delete %u %u\n", it0.key(), it1->first);
             it0.erase();
+            ::printf("delete done\n");
             if (!m0.isValid()) {
                 m0.print();
                 ::exit(1);
@@ -211,9 +218,10 @@ void testBtreeMap0()
 
         /* Insertion */
         r = rand();
-        //::printf("try to insert %u\n", r);
         UNUSED bool ret0, ret1;
+        ::printf("try to insert %u\n", r);
         ret0 = m0.insert(r, r);
+        ::printf("insert done\n");
         if (!m0.isValid()) {
             m0.print();
             ::exit(1);

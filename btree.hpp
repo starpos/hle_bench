@@ -517,6 +517,9 @@ public:
         const Key &key() const { return pageP_->key<Key>(idx_); }
         template <typename T>
         const T &value() const { return pageP_->value<T>(idx_); }
+
+        Page *page() { return pageP_; }
+        const Page *page() const { return pageP_; }
     };
     class ConstIterator : public IteratorBase<const Page, ConstIterator>
     {
@@ -524,7 +527,6 @@ public:
         ConstIterator(const Page *pageP, uint16_t idx)
             : IteratorBase<const Page, ConstIterator>(pageP, idx) {
         }
-        const Page *page() const { return pageP_; }
     };
     class Iterator : public IteratorBase<Page, Iterator>
     {
@@ -532,7 +534,6 @@ public:
         Iterator(Page *pageP, uint16_t idx)
             : IteratorBase<Page, Iterator>(pageP, idx) {
         }
-        Page *page() { return pageP_; }
         /**
          * The iterator will indicates the next record.
          */
@@ -967,21 +968,27 @@ public:
         bool operator>(const It &rhs) const { return !(*this <= rhs); }
         bool operator>=(const It &rhs) const { return !(*this < rhs); }
         It &operator++() {
-            if (pageP_) {
-                pageP_ = mapP_->nextPage(pageP_);
+            Page *p = pageP_;
+            if (p) {
+                p = mapP_->nextPage(p);
             } else {
                 /* Cyclic */
-                pageP_ = mapP_->leftMostPage();
+                p = mapP_->leftMostPage();
             }
+            assert(pageP_ != p);
+            pageP_ = p;
             return *this;
         }
         It &operator--() {
-            if (pageP_) {
-                pageP_ = mapP_->prevPage(pageP_);
+            Page *p = pageP_;
+            if (p) {
+                p = mapP_->prevPage(p);
             } else {
                 /* Cyclic */
-                pageP_ = mapP_->rightMostPage();
+                p = mapP_->rightMostPage();
             }
+            assert(pageP_ != p);
+            pageP_ = p;
             return *this;
         }
         bool isEnd() const { return pageP_ == nullptr; }
@@ -1114,7 +1121,13 @@ public:
             Page::Iterator it = it_;
 
             if (1 < it_.page()->numRecords()) {
+                bool isBegin = it_.isBegin();
                 it_.erase();
+                if (isBegin) {
+                    /* TODO: modify the key of the parent's record. */
+
+                    /* now editing */
+                }
                 return;
             }
             nextPage(); /* Do not call this for empty pages. */
@@ -1246,12 +1259,11 @@ public:
     size_t size() const {
         size_t total = 0;
         ConstPageIterator it = beginPage();
-        if (it != endPage()) {
-            ::printf("size: %zu\n", it.page()->numRecords());
+        while (it != endPage()) {
+            //::printf("size: page: %p\n", it.page());
             total += it.page()->numRecords();
             ++it;
         }
-        ::printf("totalsize: %zu\n", total);
         return total;
     }
 private:
@@ -1466,6 +1478,48 @@ private:
         while (!p->isLeaf()) p = p->child(key);
         return p;
     }
+
+    /**
+     * Get a parent record.
+     */
+    Page::ConstIterator parentRecord(const Page *page) const {
+        assert(page);
+        assert(!page->empty());
+        const Page *parent = page->parent();
+        assert(parent);
+
+        const Key &key0 = page->minKey<Key>();
+        Page::ConstIterator it = parent->search(key0);
+
+        /* The key of parent record may be less than the key0
+           because some records may have been deleted from the page.
+           If so, the next key must be the exact record. */
+        if (it.value<const Page *>() != page) {
+            ++it;
+            assert(!it.isEnd());
+        }
+        assert(it.value<const Page *>() == page);
+        return it;
+    }
+    Page::Iterator parentRecord(Page *page) {
+        assert(page);
+        assert(!page->empty());
+        Page *parent = page->parent();
+        assert(parent);
+
+        const Key &key0 = page->minKey<Key>();
+        Page::Iterator it = parent->search(key0);
+
+        /* The key of parent record may be less than the key0
+           because some records may have been deleted from the page.
+           If so, the next key must be the exact record. */
+        if (it.value<Page *>() != page) {
+            ++it;
+            assert(!it.isEnd());
+        }
+        assert(it.value<Page *>() == page);
+        return it;
+    }
     /**
      * Next leaf page.
      * This assumes the page is not empty.
@@ -1474,29 +1528,26 @@ private:
         if (!page) return leftMostPage();
         assert(page->isLeaf());
         if (page->isRoot()) return nullptr;
-        const Page *p = page->parent();
-        assert(p);
-        Key key0 = page->minKey<Key>();
+        assert(!page->empty());
+        const Page *p = page;
 
         /* Traverse ancestors. */
-        Key key = key0;
         while (true) {
-            Page::ConstIterator it = p->search(key);
-            assert(it != p->end());
+            Page::ConstIterator it = parentRecord(p);
             ++it;
-            if (it != p->end()) {
-                p = p->child(it.key<Key>());
+            if (it != p->parent()->end()) {
+                p = it.value<Page *>(); /* child */
                 break;
             }
-            key = p->minKey<Key>();
             p = p->parent();
-            if (p == nullptr) return nullptr;
+            if (p->parent() == nullptr) return nullptr;
         }
 
         /* Traverse descendants. */
         while (!p->isLeaf()) {
             p = p->leftMostChild();
         }
+        assert(page != p);
         return p;
     }
     /**
@@ -1507,29 +1558,26 @@ private:
         if (!page) return rightMostPage();
         assert(page->isLeaf());
         if (page->isRoot()) return nullptr;
-        const Page *p = page->parent();
-        assert(p);
-        Key key0 = page->minKey<Key>();
+        assert(!page->empty());
+        const Page *p = page;
 
         /* Traverse ancestors. */
-        Key key = key0;
         while (true) {
-            Page::ConstIterator it = p->search(key);
-            assert(it != p->end());
-            if (it != p->begin()) {
+            Page::ConstIterator it = parentRecord(p);
+            if (it != p->parent()->begin()) {
                 --it;
-                p = p->child(it.key<Key>());
+                p = it.value<Page *>(); /* child */
                 break;
             }
-            key = p->minKey<Key>();
             p = p->parent();
-            if (p == nullptr) return nullptr;
+            if (p->parent() == nullptr) return nullptr;
         }
 
         /* Traverse descendants. */
         while (!p->isLeaf()) {
             p = p->rightMostChild();
         }
+        assert(page != p);
         return p;
     }
     Page *nextPage(Page *page) {
@@ -1609,6 +1657,7 @@ private:
         assert(parent);
         Page::Iterator it = parent->search(key);
         assert(it.value<Page *>() == page);
+        bool isBegin = it.isBegin();
         it.erase();
 
         delete page;
@@ -1617,6 +1666,10 @@ private:
         /* Call it recursively is necessary. */
         if (parent->empty()) {
             deleteEmptyPage(parent, key);
+        } else if (isBegin) {
+            /* TODO: update the key of the parent's record. */
+
+            /* now editing */
         }
     }
     /**
