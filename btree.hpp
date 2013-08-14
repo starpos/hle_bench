@@ -923,7 +923,8 @@ private:
     CompareT less_;
     Page root_;
 
-    static int compare(const void *keyPtr0, uint16_t keySize0, const void *keyPtr1, uint16_t keySize1) {
+    static int compare(const void *keyPtr0, UNUSED uint16_t keySize0,
+                       const void *keyPtr1, UNUSED uint16_t keySize1) {
         CompareT less;
         assert(sizeof(Key) == keySize0);
         assert(sizeof(Key) == keySize1);

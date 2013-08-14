@@ -194,9 +194,9 @@ void testBtreeMap0()
         auto it0 = m0.lowerBound(r);
         auto it1 = m1.lower_bound(r);
         if (!it0.isEnd() && it1 != m1.end()) {
-            ::printf("delete %u %u\n", it0.key(), it1->first);
+            //::printf("delete %u %u\n", it0.key(), it1->first);
             it0.erase();
-            ::printf("delete done\n");
+            //::printf("delete done\n");
             if (!m0.isValid()) {
                 m0.print();
                 ::exit(1);
@@ -204,12 +204,14 @@ void testBtreeMap0()
             m1.erase(it1);
         } else {
             if (it0.isEnd() != (it1 == m1.end())) {
+#if 0
                 ::printf("search %u\n", r);
                 if (!it0.isEnd()) {
                     ::printf("btreemap: %u\n", it0.key());
                 } else {
                     ::printf("std::map: %u\n", it1->first);
                 }
+#endif
                 m0.print();
                 ::exit(1);
             }
@@ -219,9 +221,9 @@ void testBtreeMap0()
         /* Insertion */
         r = rand();
         UNUSED bool ret0, ret1;
-        ::printf("try to insert %u\n", r);
+        //::printf("try to insert %u\n", r);
         ret0 = m0.insert(r, r);
-        ::printf("insert done\n");
+        //::printf("insert done\n");
         if (!m0.isValid()) {
             m0.print();
             ::exit(1);
