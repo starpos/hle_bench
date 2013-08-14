@@ -264,7 +264,8 @@ void benchBtreeMap(size_t n)
     std::map<uint32_t, uint32_t> m1;
     for (size_t i = 0; i < n; i++) {
         uint32_t r = rand();
-        m1.insert(std::make_pair(r, r));
+        //m1.insert(std::make_pair(r, r));
+        m1.emplace(r, r);
     }
     ts.pushNow();
     ::printf("%zu records insertion / %lu ms\n", n, ts.elapsedInMs());
