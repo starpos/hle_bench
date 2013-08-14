@@ -5,7 +5,7 @@ CXX=g++-4.8.1
 ifeq ($(DEBUG),1)
   CFLAGS_OPT = -DDEBUG -g
 else
-  CFLAGS_OPT = -DNDEBUG -O2
+  CFLAGS_OPT = -DNDEBUG -O2 -pg
 endif
 CXXFLAGS = $(CFLAGS_OPT) -pthread -std=c++11 -Wall -Wextra
 CXXFLAGS += -I./include
