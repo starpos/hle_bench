@@ -245,7 +245,13 @@ void testBtreeMap0()
 
 void benchBtreeMap(size_t n0, size_t n1)
 {
+#if 0
     cybozu::util::Random<uint32_t> rand;
+#else
+    cybozu::util::Random<uint32_t> rand0;
+    cybozu::util::XorShift128 rand(rand0());
+#endif
+    
     cybozu::BtreeMap<uint32_t, uint32_t> m0;
     std::map<uint32_t, uint32_t> m1;
 
