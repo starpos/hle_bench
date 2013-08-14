@@ -242,29 +242,18 @@ void testBtreeMap0()
     /* now editing */
 }
 
-void benchBtreeMap(size_t n0)
+void benchStdMap(size_t n0, uint32_t seed)
 {
 #if 0
     cybozu::util::Random<uint32_t> rand;
 #else
-    cybozu::util::Random<uint32_t> rand0;
-    cybozu::util::XorShift128 rand(rand0());
+    cybozu::util::XorShift128 rand(seed);
 #endif
-    
-    cybozu::BtreeMap<uint32_t, uint32_t> m0;
+
     std::map<uint32_t, uint32_t> m1;
     uint32_t total = 0;
-
     cybozu::time::TimeStack<> ts;
-    ts.pushNow();
-    for (size_t i = 0; i < n0; i++) {
-        uint32_t r = rand();
-        m0.insert(r, r);
-    }
-    ts.pushNow();
-    ::printf("btreemap %zu records insertion / %lu ms\n", n0, ts.elapsedInMs());
 
-#if 1
     ts.clear();
     ts.pushNow();
     for (size_t i = 0; i < n0; i++) {
@@ -274,7 +263,59 @@ void benchBtreeMap(size_t n0)
     }
     ts.pushNow();
     ::printf("std::map %zu records insertion / %lu ms\n", n0, ts.elapsedInMs());
+
+    ts.clear();
+    ts.pushNow();
+    auto it1 = m1.begin();
+    while (it1 != m1.end()) {
+        total += it1->second;
+        ++it1;
+    }
+    ts.pushNow();
+    ::printf("std::map %zu records scan / %lu ms\n", n0, ts.elapsedInMs());
+
+    ts.clear();
+    ts.pushNow();
+    for (size_t i = 0; i < n0; i++) {
+        auto it = m1.lower_bound(rand());
+        total += it->second;
+    }
+    ts.pushNow();
+    ::printf("std::map %zu records search / %lu ms\n", n0, ts.elapsedInMs());
+    
+    ts.clear();
+    ts.pushNow();
+    for (size_t i = 0; i < n0; i++) {
+        auto it = m1.lower_bound(rand());
+        if (it != m1.end()) {
+            m1.erase(it);
+        }
+        uint32_t r = rand();
+        m1.emplace(r, r);
+    }
+    ts.pushNow();
+    ::printf("std::map %zu deletion,insertion / %lu ms\n", n0, ts.elapsedInMs());
+}
+
+void benchBtreeMap(size_t n0, uint32_t seed)
+{
+#if 0
+    cybozu::util::Random<uint32_t> rand;
+#else
+    cybozu::util::XorShift128 rand(seed);
 #endif
+    
+    cybozu::BtreeMap<uint32_t, uint32_t> m0;
+    uint32_t total = 0;
+    cybozu::time::TimeStack<> ts;
+
+    ts.pushNow();
+    for (size_t i = 0; i < n0; i++) {
+        uint32_t r = rand();
+        m0.insert(r, r);
+    }
+    ts.pushNow();
+    ::printf("btreemap %zu records insertion / %lu ms\n", n0, ts.elapsedInMs());
 
     ts.clear();
     ts.pushNow();
@@ -286,18 +327,6 @@ void benchBtreeMap(size_t n0)
     ts.pushNow();
     ::printf("btreemap %zu records scan / %lu ms\n", n0, ts.elapsedInMs());
 
-#if 1
-    ts.clear();
-    ts.pushNow();
-    auto it1 = m1.begin();
-    while (it1 != m1.end()) {
-        total += it1->second;
-        ++it1;
-    }
-    ts.pushNow();
-    ::printf("std::map %zu records scan / %lu ms\n", n0, ts.elapsedInMs());
-#endif
-
     ts.clear();
     ts.pushNow();
     for (size_t i = 0; i < n0; i++) {
@@ -307,17 +336,6 @@ void benchBtreeMap(size_t n0)
     ts.pushNow();
     ::printf("btreemap %zu records search / %lu ms\n", n0, ts.elapsedInMs());
 
-#if 1
-    ts.clear();
-    ts.pushNow();
-    for (size_t i = 0; i < n0; i++) {
-        auto it = m1.lower_bound(rand());
-        total += it->second;
-    }
-    ts.pushNow();
-    ::printf("std::map %zu records search / %lu ms\n", n0, ts.elapsedInMs());
-#endif
-    
     ts.clear();
     ts.pushNow();
     for (size_t i = 0; i < n0; i++) {
@@ -332,21 +350,6 @@ void benchBtreeMap(size_t n0)
     }
     ts.pushNow();
     ::printf("btreemap %zu deletion,insertion / %lu ms\n", n0, ts.elapsedInMs());
-
-#if 1
-    ts.clear();
-    ts.pushNow();
-    for (size_t i = 0; i < n0; i++) {
-        auto it = m1.lower_bound(rand());
-        if (it != m1.end()) {
-            m1.erase(it);
-        }
-        uint32_t r = rand();
-        m1.emplace(r, r);
-    }
-    ts.pushNow();
-    ::printf("std::map %zu deletion,insertion / %lu ms\n", n0, ts.elapsedInMs());
-#endif
 }
 
 int main()
@@ -356,5 +359,9 @@ int main()
     testPage1();
     testBtreeMap0();
 #endif
-    benchBtreeMap(5000000);
+    const size_t n = 5000000;
+    cybozu::util::Random<uint32_t> rand0;
+    uint32_t seed = rand();
+    benchBtreeMap(n, seed);
+    benchStdMap(n, seed);
 }
