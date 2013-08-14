@@ -21,7 +21,6 @@ struct CompareInt
 template <typename IntT>
 using Page = cybozu::PageX<CompareInt<IntT> >;
 
-
 void testPage0()
 {
     ::printf("%zu\n", sizeof(Page<uint32_t>));
@@ -265,6 +264,7 @@ void benchBtreeMap(size_t n0)
     ts.pushNow();
     ::printf("btreemap %zu records insertion / %lu ms\n", n0, ts.elapsedInMs());
 
+#if 1
     ts.clear();
     ts.pushNow();
     for (size_t i = 0; i < n0; i++) {
@@ -274,6 +274,29 @@ void benchBtreeMap(size_t n0)
     }
     ts.pushNow();
     ::printf("std::map %zu records insertion / %lu ms\n", n0, ts.elapsedInMs());
+#endif
+
+    ts.clear();
+    ts.pushNow();
+    auto it0 = m0.beginItem();
+    while (!it0.isEnd()) {
+	total += it0.value();
+        ++it0;
+    }
+    ts.pushNow();
+    ::printf("btreemap %zu records scan / %lu ms\n", n0, ts.elapsedInMs());
+
+#if 1
+    ts.clear();
+    ts.pushNow();
+    auto it1 = m1.begin();
+    while (it1 != m1.end()) {
+        total += it1->second;
+        ++it1;
+    }
+    ts.pushNow();
+    ::printf("std::map %zu records scan / %lu ms\n", n0, ts.elapsedInMs());
+#endif
 
     ts.clear();
     ts.pushNow();
@@ -284,6 +307,7 @@ void benchBtreeMap(size_t n0)
     ts.pushNow();
     ::printf("btreemap %zu records search / %lu ms\n", n0, ts.elapsedInMs());
 
+#if 1
     ts.clear();
     ts.pushNow();
     for (size_t i = 0; i < n0; i++) {
@@ -292,6 +316,7 @@ void benchBtreeMap(size_t n0)
     }
     ts.pushNow();
     ::printf("std::map %zu records search / %lu ms\n", n0, ts.elapsedInMs());
+#endif
     
     ts.clear();
     ts.pushNow();
@@ -308,6 +333,7 @@ void benchBtreeMap(size_t n0)
     ts.pushNow();
     ::printf("btreemap %zu deletion,insertion / %lu ms\n", n0, ts.elapsedInMs());
 
+#if 1
     ts.clear();
     ts.pushNow();
     for (size_t i = 0; i < n0; i++) {
@@ -320,6 +346,7 @@ void benchBtreeMap(size_t n0)
     }
     ts.pushNow();
     ::printf("std::map %zu deletion,insertion / %lu ms\n", n0, ts.elapsedInMs());
+#endif
 }
 
 int main()
@@ -329,5 +356,5 @@ int main()
     testPage1();
     testBtreeMap0();
 #endif
-    benchBtreeMap(1000000);
+    benchBtreeMap(5000000);
 }
