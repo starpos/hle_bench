@@ -243,7 +243,7 @@ void testBtreeMap0()
     /* now editing */
 }
 
-void benchBtreeMap(size_t n0, size_t n1)
+void benchBtreeMap(size_t n0)
 {
 #if 0
     cybozu::util::Random<uint32_t> rand;
@@ -254,6 +254,7 @@ void benchBtreeMap(size_t n0, size_t n1)
     
     cybozu::BtreeMap<uint32_t, uint32_t> m0;
     std::map<uint32_t, uint32_t> m1;
+    uint32_t total = 0;
 
     cybozu::time::TimeStack<> ts;
     ts.pushNow();
@@ -273,10 +274,28 @@ void benchBtreeMap(size_t n0, size_t n1)
     }
     ts.pushNow();
     ::printf("std::map %zu records insertion / %lu ms\n", n0, ts.elapsedInMs());
+
+    ts.clear();
+    ts.pushNow();
+    for (size_t i = 0; i < n0; i++) {
+        auto it = m0.lowerBound(rand());
+        total += it.value();
+    }
+    ts.pushNow();
+    ::printf("btreemap %zu records search / %lu ms\n", n0, ts.elapsedInMs());
+
+    ts.clear();
+    ts.pushNow();
+    for (size_t i = 0; i < n0; i++) {
+        auto it = m1.lower_bound(rand());
+        total += it->second;
+    }
+    ts.pushNow();
+    ::printf("std::map %zu records search / %lu ms\n", n0, ts.elapsedInMs());
     
     ts.clear();
     ts.pushNow();
-    for (size_t i = 0; i < n1; i++) {
+    for (size_t i = 0; i < n0; i++) {
         auto it = m0.lowerBound(rand());
         if (!it.isEnd()) {
             //::printf("delete %u\n", it.key());
@@ -287,11 +306,11 @@ void benchBtreeMap(size_t n0, size_t n1)
         m0.insert(r, r);
     }
     ts.pushNow();
-    ::printf("btreemap %zu deletion,insertion / %lu ms\n", n1, ts.elapsedInMs());
+    ::printf("btreemap %zu deletion,insertion / %lu ms\n", n0, ts.elapsedInMs());
 
     ts.clear();
     ts.pushNow();
-    for (size_t i = 0; i < n1; i++) {
+    for (size_t i = 0; i < n0; i++) {
         auto it = m1.lower_bound(rand());
         if (it != m1.end()) {
             m1.erase(it);
@@ -300,7 +319,7 @@ void benchBtreeMap(size_t n0, size_t n1)
         m1.emplace(r, r);
     }
     ts.pushNow();
-    ::printf("std::map %zu deletion,insertion / %lu ms\n", n1, ts.elapsedInMs());
+    ::printf("std::map %zu deletion,insertion / %lu ms\n", n0, ts.elapsedInMs());
 }
 
 int main()
@@ -310,5 +329,5 @@ int main()
     testPage1();
     testBtreeMap0();
 #endif
-    benchBtreeMap(1000000, 1000000);
+    benchBtreeMap(1000000);
 }
