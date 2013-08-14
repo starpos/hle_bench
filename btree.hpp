@@ -37,7 +37,7 @@ using Compare = int (*)(const void *keyPtr0, uint16_t keySize0, const void *keyP
 
 enum class BtreeError : uint8_t
 {
-    KEY_EXISTS, KEY_NOT_EXISTS, NO_SPACE,
+    KEY_EXISTS, KEY_NOT_EXISTS, NO_SPACE, INVALID_KEY,
 };
 
 /**
@@ -276,7 +276,7 @@ public:
         return erase(&key, sizeof(key));
     }
     /**
-     * Update value of a given key.
+     * Update value of a record.
      * RETURN:
      *   true in success.
      *   false if value size is larger than the stored (TODO).
@@ -288,13 +288,7 @@ public:
             if (err) *err = BtreeError::KEY_NOT_EXISTS;
             return false;
         }
-        if (valueSize(i) < valueSize0) {
-            if (err) *err = BtreeError::NO_SPACE;
-            return false;
-        }
-        stub(i).valueSize = valueSize0;
-        ::memcpy(valuePtr(i), valuePtr0, valueSize0);
-        return true;
+        return updateStub(i, valuePtr0, valueSize0, err);
     }
     template <typename Key, typename T>
     bool update(const Key &key, const T &value) {
@@ -617,6 +611,14 @@ public:
         return key<Key>(numStub() - 1);
     }
 
+    bool updateKey(Iterator it, const void *keyPtr0, uint16_t keySize0, BtreeError *err = nullptr) {
+        return updateKeyStub(it.idx_, keyPtr0, keySize0, err);
+    }
+    template <typename Key>
+    bool updateKey(Iterator it, const Key &key, BtreeError *err = nullptr) {
+        return updateKey(it, &key, sizeof(Key), err);
+    }
+    
     /**
      * These functions are used for non-leaf pages.
      */
@@ -754,6 +756,68 @@ private:
             assert(compare_(keyPtr0, keySize0, keyPtr(i0 + 1), keySize(i0 + 1)) < 0);
             return i0;
         }
+    }
+    /**
+     * Update a record with a new value.
+     *
+     * @i stub number.
+     * @valuePtr0 value pointer.
+     * @valueSize0 value size.
+     * @err error pointer.
+     *
+     * RETURN:
+     *   true in success.
+     *   false if there is no space to store new value.
+     */
+    bool updateStub(uint16_t i, const void *valuePtr0, uint16_t valueSize0, BtreeError *err = nullptr) {
+        assert(isValidIndex(i));
+        if (valueSize(i) < valueSize0) {
+            if (err) *err = BtreeError::NO_SPACE;
+            return false;
+        }
+        stub(i).valueSize = valueSize0;
+        ::memcpy(valuePtr(i), valuePtr0, valueSize0);
+        return true;
+    }
+    bool isValidIndex(uint16_t i) const {
+        return i < numStub();
+    }
+    /**
+     * Update a record with a new key.
+     * The specified key must not break the order law in the page.
+     */
+    bool updateKeyStub(uint16_t i, const void *keyPtr0, uint16_t keySize0, BtreeError *err = nullptr) {
+        assert(isValidIndex(i));
+        const uint16_t oldKeySize = keySize(i);
+        const void *oldValuePtr = valuePtr(i);
+        if (oldKeySize < keySize0) {
+            if (err) *err = BtreeError::NO_SPACE;
+            return false;
+        }
+
+        if (0 < i) {
+            /* The left key check. */
+            if (compare_(keyPtr(i - 1), keySize(i - 1), keyPtr0, keySize0) >= 0) {
+                if (err) *err = BtreeError::INVALID_KEY;
+                return false;
+            }
+        }
+        if (i < numStub() - 1) {
+            /* The right key check */
+            if (compare_(keyPtr0, keySize0, keyPtr(i + 1), keySize(i + 1)) >= 0) {
+                if (err) *err = BtreeError::INVALID_KEY;
+                return false;
+            }
+        }
+
+        /* Update key */
+        ::memcpy(keyPtr(i), keyPtr0, keySize0);
+        if (keySize0 != oldKeySize) {
+            /* Shift value data */
+            ::memmove(valuePtr(i), oldValuePtr, valueSize(i));
+        }
+        stub(i).keySize = keySize0;
+        return true;
     }
     /**
      * Erase a stub.
@@ -1123,11 +1187,7 @@ public:
             if (1 < it_.page()->numRecords()) {
                 bool isBegin = it_.isBegin();
                 it_.erase();
-                if (isBegin) {
-                    /* TODO: modify the key of the parent's record. */
-
-                    /* now editing */
-                }
+                if (isBegin) mapP_->updateMinKey(it_.page());
                 return;
             }
             nextPage(); /* Do not call this for empty pages. */
@@ -1513,11 +1573,11 @@ private:
         /* The key of parent record may be less than the key0
            because some records may have been deleted from the page.
            If so, the next key must be the exact record. */
-        if (it.value<Page *>() != page) {
+        if (it.value<const Page *>() != page) {
             ++it;
             assert(!it.isEnd());
         }
-        assert(it.value<Page *>() == page);
+        assert(it.value<const Page *>() == page);
         return it;
     }
     /**
@@ -1667,9 +1727,28 @@ private:
         if (parent->empty()) {
             deleteEmptyPage(parent, key);
         } else if (isBegin) {
-            /* TODO: update the key of the parent's record. */
+            updateMinKey(parent);
+        }
+    }
+    /**
+     * Modify the key of ancestors for the minimum key of 
+     * a specified page.
+     */
+    void updateMinKey(Page *page) {
+        assert(page);
+        assert(!page->empty());
+        if (page->isRoot()) return;
 
-            /* now editing */
+        Page *parent = page->parent();
+        assert(parent);
+        const Key &key = page->minKey<Key>();
+        Page::Iterator it = parentRecord(page);
+        UNUSED bool ret = parent->updateKey(it, key);
+        assert(ret);
+
+        if (it.isBegin()) {
+            /* Recursive call. */
+            updateMinKey(parent);
         }
     }
     /**
