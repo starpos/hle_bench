@@ -345,6 +345,14 @@ public:
         ::printf("\n");
     }
     /**
+     * Estimate the effect of gc() and decide to whether we should do gc() or not.
+     */
+    bool shouldGc() const {
+        uint16_t emptySize = PAGE_SIZE - headerEndOff();
+        uint16_t currentSize = totalDataSize();
+        return currentSize * 2 < emptySize;
+    }
+    /**
      * Collect garbage.
      */
     void gc() {
@@ -967,7 +975,7 @@ public:
         Page *p = searchLeaf(key);
         assert(p->isLeaf());
 
-        if (!p->canInsert(size)) p->gc();
+        if (!p->canInsert(size) && p->shouldGc()) p->gc();
         if (!p->canInsert(size)) p = splitLeaf(p, key);
 
         assert(p->canInsert(size));
