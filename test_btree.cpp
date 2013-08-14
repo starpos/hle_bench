@@ -278,7 +278,7 @@ void benchStdMap(size_t n0, uint32_t seed)
     ts.pushNow();
     for (size_t i = 0; i < n0; i++) {
         auto it = m1.lower_bound(rand());
-        total += it->second;
+        if (it != m1.end()) total += it->second;
     }
     ts.pushNow();
     ::printf("std::map %zu records search / %lu ms\n", n0, ts.elapsedInMs());
@@ -331,7 +331,7 @@ void benchBtreeMap(size_t n0, uint32_t seed)
     ts.pushNow();
     for (size_t i = 0; i < n0; i++) {
         auto it = m0.lowerBound(rand());
-        total += it.value();
+        if (!it.isEnd()) total += it.value();
     }
     ts.pushNow();
     ::printf("btreemap %zu records search / %lu ms\n", n0, ts.elapsedInMs());
@@ -359,9 +359,11 @@ int main()
     testPage1();
     testBtreeMap0();
 #endif
-    const size_t n = 5000000;
+#if 1
+    const size_t n = 1000000;
     cybozu::util::Random<uint32_t> rand0;
     uint32_t seed = rand();
     benchBtreeMap(n, seed);
-    benchStdMap(n, seed);
+    //benchStdMap(n, seed);
+#endif
 }

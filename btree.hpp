@@ -119,7 +119,7 @@ struct header
     uint16_t recEndOff; /* record end offset in the page. */
     uint16_t stubBgnOff; /* stub begin offset in the page. */
     uint16_t level; /* 0 for leaf nodes. */
-    uint16_t reserved0;
+    uint16_t totalDataSize; /* total data size in the page. */
     void *parent; /* parent pointer. nullptr in a root node. */
 } PACKED;
 
@@ -186,7 +186,8 @@ public:
         header().stubBgnOff = PAGE_SIZE;
         header().parent = nullptr;
         header().level = uint16_t(-1); /* POISON value. You must set it by yourself. */
-#if DEBUG
+        header().totalDataSize = 0;
+#ifdef DEBUG
         /* zero-clear except for header area. */
         uint16_t size = PAGE_SIZE - headerEndOff();
         ::memset(page_ + headerEndOff(), 0, size);
@@ -195,6 +196,9 @@ public:
     bool isValid() const {
         if (!(recEndOff() <= stubBgnOff())) return false;
         if (!(stubBgnOff() <= PAGE_SIZE)) return false;
+#ifdef DEBUG
+        if (totalDataSize() != calcTotalDataSize()) return false;
+#endif
         return true;
     }
     bool empty() const {
@@ -209,7 +213,7 @@ public:
     /**
      * Total data size for record and stub.
      */
-    uint16_t totalDataSize() const {
+    uint16_t calcTotalDataSize() const {
         uint16_t total = 0;
         for (uint16_t i = 0; i < numStub(); i++) {
             total += keySize(i) + valueSize(i) + sizeof(struct stub);
@@ -257,6 +261,7 @@ public:
         stub(i - 1).off = recOff;
         stub(i - 1).keySize = keySize0;
         stub(i - 1).valueSize = valueSize0;
+        header().totalDataSize += keySize0 + valueSize0 + sizeof(struct stub);
 
         return true;
     }
@@ -679,6 +684,12 @@ private:
     uint16_t headerEndOff() const { return sizeof(struct header); }
     uint16_t recEndOff() const { return header().recEndOff; }
     uint16_t stubBgnOff() const { return header().stubBgnOff; }
+    uint16_t totalDataSize() const {
+#ifdef DEBUG
+        assert(header().totalDataSize == calcTotalDataSize());
+#endif
+        return header().totalDataSize;
+    }
     struct stub &stub(size_t i) {
         assert(i < numStub());
         struct stub *st = reinterpret_cast<struct stub *>(page_ + stubBgnOff());
@@ -789,12 +800,14 @@ private:
      */
     bool updateStub(uint16_t i, const void *valuePtr0, uint16_t valueSize0, BtreeError *err = nullptr) {
         assert(isValidIndex(i));
-        if (valueSize(i) < valueSize0) {
+        uint16_t oldValueSize = valueSize(i);
+        if (oldValueSize < valueSize0) {
             if (err) *err = BtreeError::NO_SPACE;
             return false;
         }
         stub(i).valueSize = valueSize0;
         ::memcpy(valuePtr(i), valuePtr0, valueSize0);
+        header().totalDataSize -= oldValueSize - valueSize0;
         return true;
     }
     bool isValidIndex(uint16_t i) const {
@@ -835,6 +848,7 @@ private:
             ::memmove(valuePtr(i), oldValuePtr, valueSize(i));
         }
         stub(i).keySize = keySize0;
+        header().totalDataSize -= oldKeySize - keySize0;
         return true;
     }
     /**
@@ -842,6 +856,7 @@ private:
      */
     void eraseStub(size_t i) {
         assert(i < numStub());
+        header().totalDataSize -= stub(i).keySize + stub(i).valueSize + sizeof(struct stub);
         for (uint16_t j = i; 0 < j; j--) {
             stub(j) = stub(j - 1);
         }
