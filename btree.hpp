@@ -213,12 +213,21 @@ public:
     /**
      * Total data size for record and stub.
      */
+    uint16_t totalDataSize() const {
+#ifdef DEBUG
+        assert(header().totalDataSize == calcTotalDataSize());
+#endif
+        return header().totalDataSize;
+    }
     uint16_t calcTotalDataSize() const {
         uint16_t total = 0;
         for (uint16_t i = 0; i < numStub(); i++) {
             total += keySize(i) + valueSize(i) + sizeof(struct stub);
         }
         return total;
+    }
+    uint16_t emptySize() const {
+        return PAGE_SIZE - headerEndOff();
     }
     bool canInsert(uint16_t size) const {
         return size + sizeof(struct stub) <= freeSpace();
@@ -353,9 +362,7 @@ public:
      * Estimate the effect of gc() and decide to whether we should do gc() or not.
      */
     bool shouldGc() const {
-        uint16_t emptySize = PAGE_SIZE - headerEndOff();
-        uint16_t currentSize = totalDataSize();
-        return currentSize * 2 < emptySize;
+        return totalDataSize() * 2 < emptySize();
     }
     /**
      * Collect garbage.
@@ -466,7 +473,9 @@ public:
         if (freeSpace() < rhs.totalDataSize()) {
             return false; /* no enough space. */
         }
-        /* Reverse order. */
+        assert(level() == rhs.level());
+        
+        /* Insert records in the reverse order for efficiency. */
         uint16_t n = rhs.numStub();
         UNUSED bool ret;
         for (uint16_t i = n; 0 < i; i--) {
@@ -513,7 +522,12 @@ public:
         }
         bool isBegin() const { return idx_ == 0; }
         bool isEnd() const { return pageP_->numStub() <= idx_; }
-
+        uint16_t idx() const { return idx_; }
+        void updateIdx(uint16_t idx) {
+            assert(idx <= pageP_->numStub()); /* can indicate the end. */
+            idx_ = idx;
+        }
+        
         void print() const {
             ::printf("Page::Iterator %p %u\n", pageP_, idx_);
         }
@@ -684,12 +698,6 @@ private:
     uint16_t headerEndOff() const { return sizeof(struct header); }
     uint16_t recEndOff() const { return header().recEndOff; }
     uint16_t stubBgnOff() const { return header().stubBgnOff; }
-    uint16_t totalDataSize() const {
-#ifdef DEBUG
-        assert(header().totalDataSize == calcTotalDataSize());
-#endif
-        return header().totalDataSize;
-    }
     struct stub &stub(size_t i) {
         assert(i < numStub());
         struct stub *st = reinterpret_cast<struct stub *>(page_ + stubBgnOff());
@@ -1220,18 +1228,27 @@ public:
             assert(!isEnd());
             Key lastKey = it_.template key<Key>();
             Page *page = it_.page();
-            typename Page::Iterator it = it_;
 
-            if (1 < it_.page()->numRecords()) {
-                bool isBegin = it_.isBegin();
-                it_.erase();
-                if (isBegin) mapP_->updateMinKey(it_.page());
+            if (it_.page()->numRecords() == 1) {
+                typename Page::Iterator it = it_;
+                nextPage(); /* Do not call this for empty pages. */
+                it.erase();
+                assert(page->empty());
+                mapP_->deleteEmptyPage(page, lastKey);
+                mapP_->liftUp();
                 return;
             }
-            nextPage(); /* Do not call this for empty pages. */
-            it.erase();
-            assert(page->empty());
-            mapP_->deleteEmptyPage(page, lastKey);
+            bool isBegin = it_.isBegin();
+            it_.erase();
+            assert(!it_.page()->empty());
+
+            UNUSED bool isEnd = it_.isEnd();
+            UNUSED Key key;
+            if (!isEnd) key = it_.template key<Key>();
+            if (isBegin) mapP_->updateMinKey(it_.page());
+            it_ = mapP_->tryMerge(it_);
+            if (isEnd) assert(it_.isEnd());
+            else assert(key == it_.template key<Key>());
             mapP_->liftUp();
         }
         const Key &key() const {
@@ -1788,6 +1805,56 @@ private:
             /* Recursive call. */
             updateMinKey(parent);
         }
+    }
+    /**
+     * Try merge the page and its left page.
+     */
+    typename Page::Iterator tryMerge(typename Page::Iterator it) {
+        Page *page = it.page();
+        assert(page);
+        assert(!page->empty());
+        if (page->isRoot()) return it;
+        if (page->emptySize() < page->totalDataSize() * 2) {
+            /* No need to merge. */
+            return it;
+        }
+        typename Page::Iterator it0 = parentRecord(page);
+        if (it0.isBegin()) return it;
+        --it0;
+        Page *leftPage = it0.template value<Page *>();
+        if (page->emptySize() < leftPage->totalDataSize() + page->totalDataSize()) {
+            /* No space to merge. */
+            return it;
+        }
+        if (page->freeSpace() < leftPage->totalDataSize()) {
+            page->gc();
+        }
+#if 0
+        ::printf("do really merge (level %u)\n", page->level()); /* debug */
+#endif
+        assert(leftPage->totalDataSize() <= page->freeSpace());
+        if (!leftPage->isLeaf()) {
+            /* Update parent firld of the children of the old left page. */
+            typename Page::Iterator it1 = leftPage->begin();
+            while (!it1.isEnd()) {
+                Page *child = it1.template value<Page *>();
+                child->header().parent = page;
+                ++it1;
+            }
+        }            
+        uint16_t n = leftPage->numRecords();
+        UNUSED bool ret = page->merge(*leftPage);
+        assert(ret);
+        delete leftPage;
+        it.updateIdx(it.idx() + n);
+        Key key = it0.template key<Key>();
+        it0.erase(); /* delete leftPage's record in the parent page. */
+        assert(it0.template value<Page *>() == page);
+        /* Update rightPage's key with leftPage's one. */
+        ret = it0.page()->updateKey(it0, key); 
+        assert(ret);
+        tryMerge(it0); /* recursive call. */
+        return it;
     }
     /**
      * Shrink the depth if possible.
