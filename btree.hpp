@@ -1814,7 +1814,7 @@ private:
         assert(page);
         assert(!page->empty());
         if (page->isRoot()) return it;
-        if (page->emptySize() < page->totalDataSize() * 2) {
+        if (page->emptySize() < page->totalDataSize() * 3) {
             /* No need to merge. */
             return it;
         }

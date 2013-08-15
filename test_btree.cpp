@@ -360,10 +360,12 @@ int main()
     testBtreeMap0();
 #endif
 #if 1
-    const size_t n = 500000;
+    const size_t n = 1000000;
     cybozu::util::Random<uint32_t> rand0;
-    uint32_t seed = rand();
-    benchBtreeMap(n, seed);
-    benchStdMap(n, seed);
+    for (int i = 0; i < 1; i++) {
+        uint32_t seed = rand();
+        benchBtreeMap(n, seed);
+        benchStdMap(n, seed);
+    }
 #endif
 }
