@@ -4,6 +4,7 @@
 #include <memory>
 #include <cinttypes>
 #include <mutex>
+#include <immintrin.h> /* for _mm_pause() */
 
 #include "thread_util.hpp"
 #include "time.hpp"
@@ -28,58 +29,128 @@ public:
     }
 };
 
-class SpinWorker : public cybozu::thread::Runnable
+class SpinlockHle
 {
 private:
-    std::atomic_flag &mutex_;
-    uint64_t &counter_;
-    const std::atomic<bool> &isBgn_;
+    char &lock_;
+public:
+    explicit SpinlockHle(char &lock) : lock_(lock) {
+        /* Acquire lock with lock elision */
+#if 1
+        while (__atomic_exchange_n(&lock_, 1, __ATOMIC_ACQUIRE|__ATOMIC_HLE_ACQUIRE))
+#else
+        while (__atomic_exchange_n(&lock_, 1, __ATOMIC_ACQUIRE))
+#endif
+            _mm_pause(); /* Abort failed transaction */
+    }
+    ~SpinlockHle() noexcept {
+        /* Free lock with lock elision */
+#if 1
+        __atomic_clear(&lock_, __ATOMIC_RELEASE|__ATOMIC_HLE_RELEASE);
+#else
+        __atomic_clear(&lock_, __ATOMIC_RELEASE);
+#endif
+    }
+};
+
+class Worker : public cybozu::thread::Runnable
+{
+protected:
+    const std::atomic<bool> &isReady_;
     const std::atomic<bool> &isEnd_;
 public:
-    SpinWorker(std::atomic_flag &mutex, uint64_t &counter, const std::atomic<bool> &isBgn, const std::atomic<bool> &isEnd)
-        : mutex_(mutex), counter_(counter), isBgn_(isBgn), isEnd_(isEnd) {
+    Worker(const std::atomic<bool> &isReady, const std::atomic<bool> &isEnd)
+        : isReady_(isReady), isEnd_(isEnd) {
     }
-    void run() {
-        while (!isEnd_.load()) {
-            Spinlock lk(mutex_);
-            counter_++;
-        }
-    }
-    void operator()() noexcept override {
-        try {
-            run();
-            done();
-        } catch (...) {
-            throwErrorLater();
+    virtual ~Worker() noexcept = default;
+protected:
+    void waitForReady() {
+        while (!isReady_.load(std::memory_order_relaxed)) {
+            pause();
         }
     }
 };
 
-class MutexWorker : public cybozu::thread::Runnable
+class SpinWorker : public Worker
 {
 private:
-    std::mutex &mutex_;
+    std::atomic_flag &mutex_;
     uint64_t &counter_;
-    std::atomic<bool> &isBgn_;
-    std::atomic<bool> &isEnd_;
 public:
-    MutexWorker(std::mutex &mutex, uint64_t &counter, std::atomic<bool> &isBgn, std::atomic<bool> &isEnd)
-        : mutex_(mutex), counter_(counter), isBgn_(isBgn), isEnd_(isEnd) {
-    }
-    void run() {
-        while (!isBgn_.load()) {
-        }
-        while (!isEnd_.load()) {
-            std::lock_guard<std::mutex> lk(mutex_);
-            counter_++;
-        }
+    SpinWorker(std::atomic_flag &mutex, uint64_t &counter,
+               const std::atomic<bool> &isReady, const std::atomic<bool> &isEnd)
+        : Worker(isReady, isEnd), mutex_(mutex), counter_(counter) {
     }
     void operator()() noexcept override {
         try {
+            waitForReady();
             run();
             done();
         } catch (...) {
             throwErrorLater();
+        }
+    }
+private:
+    void run() {
+        while (!isEnd_.load(std::memory_order_relaxed)) {
+            Spinlock lk(mutex_);
+            counter_++;
+        }
+    }
+};
+
+class SpinHleWorker : public Worker
+{
+private:
+    char &mutex_;
+    uint64_t &counter_;
+public:
+    SpinHleWorker(char &mutex, uint64_t &counter,
+                  const std::atomic<bool> &isReady, const std::atomic<bool> &isEnd)
+        : Worker(isReady, isEnd), mutex_(mutex), counter_(counter) {
+    }
+    void operator()() noexcept override {
+        try {
+            waitForReady();
+            run();
+            done();
+        } catch (...) {
+            throwErrorLater();
+        }
+    }
+private:
+    void run() {
+        while (!isEnd_.load(std::memory_order_relaxed)) {
+            SpinlockHle lk(mutex_);
+            counter_++;
+        }
+    }
+};
+
+class MutexWorker : public Worker
+{
+private:
+    std::mutex &mutex_;
+    uint64_t &counter_;
+public:
+    MutexWorker(std::mutex &mutex, uint64_t &counter,
+                const std::atomic<bool> &isReady, const std::atomic<bool> &isEnd)
+        : Worker(isReady, isEnd), mutex_(mutex), counter_(counter) {
+    }
+    void operator()() noexcept override {
+        try {
+            waitForReady();
+            run();
+            done();
+        } catch (...) {
+            throwErrorLater();
+        }
+    }
+private:
+    void run() {
+        while (!isEnd_.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> lk(mutex_);
+            counter_++;
         }
     }
 };
@@ -89,15 +160,15 @@ void testSpinlock(size_t nThreads, size_t execMs)
     cybozu::thread::ThreadRunnerSet thSet;
     alignas(64) std::atomic_flag mutex = ATOMIC_FLAG_INIT;
     alignas(64) uint64_t counter = 0;
-    alignas(64) std::atomic<bool> isBgn(false);
+    alignas(64) std::atomic<bool> isReady(false);
     alignas(64) std::atomic<bool> isEnd(false);
     for (size_t i = 0; i < nThreads; i++) {
-        thSet.add(std::make_shared<SpinWorker>(mutex, std::ref(counter), isBgn, isEnd));
+        thSet.add(std::make_shared<SpinWorker>(mutex, counter, isReady, isEnd));
     }
     cybozu::time::TimeStack<> ts;
     thSet.start();
     ts.pushNow();
-    isBgn.store(true);
+    isReady.store(true);
     std::this_thread::sleep_for(std::chrono::milliseconds(execMs));
     isEnd.store(true);
     ts.pushNow();
@@ -105,20 +176,42 @@ void testSpinlock(size_t nThreads, size_t execMs)
     ::printf("Spinlock:  %" PRIu64 " %lu us\n", counter, ts.elapsedInUs());
 }
 
+void testSpinlockHle(size_t nThreads, size_t execMs)
+{
+    cybozu::thread::ThreadRunnerSet thSet;
+    alignas(64) char mutex = 0;
+    alignas(64) uint64_t counter = 0;
+    alignas(64) std::atomic<bool> isReady(false);
+    alignas(64) std::atomic<bool> isEnd(false);
+    for (size_t i = 0; i < nThreads; i++) {
+        thSet.add(std::make_shared<SpinHleWorker>(
+                      mutex, std::ref(counter), isReady, isEnd));
+    }
+    cybozu::time::TimeStack<> ts;
+    thSet.start();
+    ts.pushNow();
+    isReady.store(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(execMs));
+    isEnd.store(true);
+    ts.pushNow();
+    thSet.join();
+    ::printf("SpinlockHle:  %" PRIu64 " %lu us\n", counter, ts.elapsedInUs());
+}
+
 void testMutexlock(size_t nThreads, size_t execMs)
 {
     cybozu::thread::ThreadRunnerSet thSet;
     alignas(64) std::mutex mutex;
     alignas(64) uint64_t counter = 0;
-    alignas(64) std::atomic<bool> isBgn(false);
+    alignas(64) std::atomic<bool> isReady(false);
     alignas(64) std::atomic<bool> isEnd(false);
     for (size_t i = 0; i < nThreads; i++) {
-        thSet.add(std::make_shared<MutexWorker>(mutex, std::ref(counter), isBgn, isEnd));
+        thSet.add(std::make_shared<MutexWorker>(mutex, counter, isReady, isEnd));
     }
     cybozu::time::TimeStack<> ts;
     thSet.start();
     ts.pushNow();
-    isBgn.store(true);
+    isReady.store(true);
     std::this_thread::sleep_for(std::chrono::milliseconds(execMs));
     isEnd.store(true);
     ts.pushNow();
@@ -128,12 +221,15 @@ void testMutexlock(size_t nThreads, size_t execMs)
 
 int main(int argc, char *argv[])
 {
-    size_t nThreads = 1;
+    size_t nThreads = 4;
     if (1 < argc) nThreads = ::atoi(argv[1]);
     size_t execMs = 1000;
     size_t nTrials = 5;
     for (size_t i = 0; i < nTrials; i++) {
         testSpinlock(nThreads, execMs);
+    }
+    for (size_t i = 0; i < nTrials; i++) {
+        testSpinlockHle(nThreads, execMs);
     }
     for (size_t i = 0; i < nTrials; i++) {
         testMutexlock(nThreads, execMs);
