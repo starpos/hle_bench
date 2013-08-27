@@ -1,10 +1,7 @@
+#pragma once
 /**
  * B-tree in memory.
  */
-
-#ifndef B_TREE_MEMORY_HPP
-#define B_TREE_MEMORY_HPP
-
 #include <cstdio>
 #include <cstdlib>
 #include <cassert>
@@ -474,7 +471,7 @@ public:
             return false; /* no enough space. */
         }
         assert(level() == rhs.level());
-        
+
         /* Insert records in the reverse order for efficiency. */
         uint16_t n = rhs.numStub();
         UNUSED bool ret;
@@ -527,7 +524,7 @@ public:
             assert(idx <= pageP_->numStub()); /* can indicate the end. */
             idx_ = idx;
         }
-        
+
         void print() const {
             ::printf("Page::Iterator %p %u\n", pageP_, idx_);
         }
@@ -545,11 +542,11 @@ public:
 
         PageT *page() { return pageP_; }
         const PageT *page() const { return pageP_; }
-        
+
     };
     template <typename It>
     using BaseC = IteratorBase<const Page, It>;
-    
+
     class ConstIterator : public BaseC<ConstIterator>
     {
     public:
@@ -655,7 +652,7 @@ public:
     bool updateKey(Iterator it, const Key &key, BtreeError *err = nullptr) {
         return updateKey(it, &key, sizeof(Key), err);
     }
-    
+
     /**
      * These functions are used for non-leaf pages.
      */
@@ -1786,7 +1783,7 @@ private:
         }
     }
     /**
-     * Modify the key of ancestors for the minimum key of 
+     * Modify the key of ancestors for the minimum key of
      * a specified page.
      */
     void updateMinKey(Page *page) {
@@ -1841,7 +1838,7 @@ private:
                 child->header().parent = page;
                 ++it1;
             }
-        }            
+        }
         uint16_t n = leftPage->numRecords();
         UNUSED bool ret = page->merge(*leftPage);
         assert(ret);
@@ -1851,7 +1848,7 @@ private:
         it0.erase(); /* delete leftPage's record in the parent page. */
         assert(it0.template value<Page *>() == page);
         /* Update rightPage's key with leftPage's one. */
-        ret = it0.page()->updateKey(it0, key); 
+        ret = it0.page()->updateKey(it0, key);
         assert(ret);
         tryMerge(it0); /* recursive call. */
         return it;
@@ -1884,5 +1881,3 @@ private:
 };
 
 } //namespace cybozu
-
-#endif /* B_TREE_MEMORY_HPP */
