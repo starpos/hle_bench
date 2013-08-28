@@ -13,7 +13,7 @@ CXXFLAGS += -I./include
 
 #BINARIES = bench test_btree
 #BINARIES = bench
-BINARIES = test_btree
+BINARIES = test_btree bench bench_map
 
 all: $(BINARIES)
 
