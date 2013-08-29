@@ -152,6 +152,7 @@ void testSpinStdMapWorker(
     ::printf("SpinStdMap_%d_%" PRIu32 "_%05u    %12" PRIu64 " counts  %lu us  %zu threads\n"
              , useHLE, nInitItems, readPct
              , counter, ts.elapsedInUs(), nThreads);
+    ::fflush(::stdout);
 }
 
 template <int useHLE>
@@ -185,16 +186,17 @@ void testSpinBtreeMapWorker(
     ::printf("SpinBtreeMap_%d_%" PRIu32 "_%05u  %12" PRIu64 " counts  %lu us  %zu threads\n"
              , useHLE, nInitItems, readPct
              , counter, ts.elapsedInUs(), nThreads);
+    ::fflush(::stdout);
 }
 
 int main()
 {
     size_t execMs = 10000;
-    uint32_t nInitItems = 1000000;
+    uint32_t nInitItems = 10000;
     size_t nTrials = 10;
-    for (size_t nThreads = 1; nThreads <= 8; nThreads++) {
+    for (size_t nThreads = 1; nThreads <= 12; nThreads++) {
         //for (uint16_t readPct : {0, 9000, 10000}) {
-        for (uint16_t readPct : {0, 5000, 9000, 9500, 9900, 10000}) {
+        for (uint16_t readPct : {0, 9000, 9900, 10000}) {
             for (size_t i = 0; i < nTrials; i++) {
                 testSpinStdMapWorker<0>(nThreads, execMs, nInitItems, readPct);
                 testSpinStdMapWorker<1>(nThreads, execMs, nInitItems, readPct);
