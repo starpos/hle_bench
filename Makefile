@@ -14,13 +14,14 @@ CXXFLAGS += -I./include
 #BINARIES = bench test_btree
 #BINARIES = bench
 BINARIES = test_btree bench bench_map
+DEPENDS = $(patsubst %,%.depend,$(BINARIES))
 
 all: $(BINARIES)
 
 %: %.o
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
-.cpp.o:
+%.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $<
 
 clean:
@@ -29,3 +30,10 @@ clean:
 rebuild:
 	$(MAKE) clean
 	$(MAKE) all
+
+%.depend: %.cpp
+	$(CXX) -MM $< $(CXXFLAGS) > $@
+
+ifneq "$(MAKECMDGOALS)" "clean"
+-include $(DEPENDS)
+endif
