@@ -25,7 +25,7 @@ struct CacheLine
     CacheLine() : value(0) {}
 };
 
-template <int useHLE>
+template <bool useHLE, bool useTTAS>
 class SpinStdMapWorker : public bench::Worker
 {
 private:
@@ -46,7 +46,7 @@ public:
 private:
     void run() override {
         while (!isEnd_.load(std::memory_order_relaxed)) {
-            cybozu::SpinlockHle<useHLE> lk(mutex_);
+            cybozu::SpinlockT<useHLE, useTTAS> lk(mutex_);
             runCriticalSection();
             counter_++;
         }
@@ -73,7 +73,7 @@ private:
     }
 };
 
-template <int useHLE>
+template <bool useHLE, bool useTTAS>
 class SpinBtreeMapWorker : public bench::Worker
 {
 private:
@@ -94,7 +94,7 @@ public:
 private:
     void run() override {
         while (!isEnd_.load(std::memory_order_relaxed)) {
-            cybozu::SpinlockHle<useHLE> lk(mutex_);
+            cybozu::SpinlockT<useHLE, useTTAS> lk(mutex_);
             runCriticalSection();
             counter_++;
         }
@@ -121,7 +121,7 @@ private:
     }
 };
 
-template <int useHLE>
+template <bool useHLE, bool useTTAS>
 void testSpinStdMapWorker(
     size_t nThreads, size_t execMs, uint32_t nInitItems, uint16_t readPct)
 {
@@ -137,7 +137,7 @@ void testSpinStdMapWorker(
     }
     for (size_t i = 0; i < nThreads; i++) {
         uint32_t seed = rand();
-        auto worker = std::make_shared<SpinStdMapWorker<useHLE> >(
+        auto worker = std::make_shared<SpinStdMapWorker<useHLE, useTTAS> >(
             mutex, map, counterV[i].value, seed, readPct, isReady, isEnd);
         thSet.add(worker);
     }
@@ -149,13 +149,13 @@ void testSpinStdMapWorker(
         counter += c.value;
     }
 
-    ::printf("SpinStdMap_%d_%" PRIu32 "_%05u    %12" PRIu64 " counts  %lu us  %zu threads\n"
-             , useHLE, nInitItems, readPct
+    ::printf("SpinStdMap_%d_%d_%" PRIu32 "_%05u    %12" PRIu64 " counts  %lu us  %zu threads\n"
+             , useHLE, useTTAS, nInitItems, readPct
              , counter, ts.elapsedInUs(), nThreads);
     ::fflush(::stdout);
 }
 
-template <int useHLE>
+template <bool useHLE, bool useTTAS>
 void testSpinBtreeMapWorker(
     size_t nThreads, size_t execMs, uint32_t nInitItems, uint16_t readPct)
 {
@@ -171,7 +171,7 @@ void testSpinBtreeMapWorker(
     }
     for (size_t i = 0; i < nThreads; i++) {
         uint32_t seed = rand();
-        auto worker = std::make_shared<SpinBtreeMapWorker<useHLE> >(
+        auto worker = std::make_shared<SpinBtreeMapWorker<useHLE, useTTAS> >(
             mutex, map, counterV[i].value, seed, readPct, isReady, isEnd);
         thSet.add(worker);
     }
@@ -183,25 +183,34 @@ void testSpinBtreeMapWorker(
         counter += c.value;
     }
 
-    ::printf("SpinBtreeMap_%d_%" PRIu32 "_%05u  %12" PRIu64 " counts  %lu us  %zu threads\n"
-             , useHLE, nInitItems, readPct
+    ::printf("SpinBtreeMap_%d_%d_%" PRIu32 "_%05u  %12" PRIu64 " counts  %lu us  %zu threads\n"
+             , useHLE, useTTAS, nInitItems, readPct
              , counter, ts.elapsedInUs(), nThreads);
     ::fflush(::stdout);
 }
 
 int main()
 {
+#if 1
     size_t execMs = 10000;
-    uint32_t nInitItems = 10000;
     size_t nTrials = 10;
-    for (size_t nThreads = 1; nThreads <= 12; nThreads++) {
-        //for (uint16_t readPct : {0, 9000, 10000}) {
-        for (uint16_t readPct : {0, 9000, 9900, 10000}) {
-            for (size_t i = 0; i < nTrials; i++) {
-                testSpinStdMapWorker<0>(nThreads, execMs, nInitItems, readPct);
-                testSpinStdMapWorker<1>(nThreads, execMs, nInitItems, readPct);
-                testSpinBtreeMapWorker<0>(nThreads, execMs, nInitItems, readPct);
-                testSpinBtreeMapWorker<1>(nThreads, execMs, nInitItems, readPct);
+#else
+    size_t execMs = 3000;
+    size_t nTrials = 1;
+#endif
+    for (uint32_t nInitItems : {10000, 1000000}) {
+        for (size_t nThreads = 1; nThreads <= 12; nThreads++) {
+            for (uint16_t readPct : {0, 9000, 9900, 10000}) {
+                for (size_t i = 0; i < nTrials; i++) {
+                    testSpinStdMapWorker<0,0>(nThreads, execMs, nInitItems, readPct);
+                    testSpinStdMapWorker<0,1>(nThreads, execMs, nInitItems, readPct);
+                    testSpinStdMapWorker<1,0>(nThreads, execMs, nInitItems, readPct);
+                    testSpinStdMapWorker<1,1>(nThreads, execMs, nInitItems, readPct);
+                    testSpinBtreeMapWorker<0,0>(nThreads, execMs, nInitItems, readPct);
+                    testSpinBtreeMapWorker<0,1>(nThreads, execMs, nInitItems, readPct);
+                    testSpinBtreeMapWorker<1,0>(nThreads, execMs, nInitItems, readPct);
+                    testSpinBtreeMapWorker<1,1>(nThreads, execMs, nInitItems, readPct);
+                }
             }
         }
     }

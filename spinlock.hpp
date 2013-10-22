@@ -12,6 +12,7 @@
 
 namespace cybozu {
 
+#if 0
 static inline void pause(void)
 {
     asm volatile("pause" ::: "memory");
@@ -34,28 +35,38 @@ public:
         lock_.clear(std::memory_order_release);
     }
 };
+#endif
 
 /**
- * Spinlock with HLE support
+ * Spinlock with HLE support.
+ * You can use test_and_test_and_set with useTTAS flag.
  * using GCC extension (gcc-4.8 or more is required).
  */
-template <int useHLE>
-class SpinlockHle
+template <bool useHLE, bool useTTAS>
+class SpinlockT
 {
 private:
     char &lock_;
 public:
-    explicit SpinlockHle(char &lock) : lock_(lock) {
-        /* Acquire lock with lock elision */
+    explicit SpinlockT(char &lock) : lock_(lock) {
         int flags = __ATOMIC_ACQUIRE | (useHLE ? __ATOMIC_HLE_ACQUIRE : 0);
-        while (__atomic_exchange_n(&lock_, 1, flags))
-            _mm_pause(); /* Abort failed transaction */
+        if (useTTAS) {
+            while (lock_ || __atomic_exchange_n(&lock_, 1, flags))
+                _mm_pause();
+        } else {
+            while (__atomic_exchange_n(&lock_, 1, flags))
+                _mm_pause();
+        }
     }
-    ~SpinlockHle() noexcept {
-        /* Free lock with lock elision */
+    ~SpinlockT() noexcept {
         int flags = __ATOMIC_RELEASE | (useHLE ? __ATOMIC_HLE_RELEASE : 0);
         __atomic_clear(&lock_, flags);
     }
 };
+
+using Spinlock = SpinlockT<false, false>;
+using SpinlockHle = SpinlockT<true, false>;
+using Ttaslock = SpinlockT<false, true>;
+using TtaslockHle = SpinlockT<true, true>;
 
 } //namespace cybozu

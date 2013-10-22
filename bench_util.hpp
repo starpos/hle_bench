@@ -45,14 +45,12 @@ public:
         : isReady_(isReady), isEnd_(isEnd) {
     }
     virtual ~Worker() noexcept = default;
-    void operator()() noexcept {
-        try {
-            waitForReady();
-            run();
-            done();
-        } catch (...) {
-            throwErrorLater();
-        }
+    void operator()() noexcept override try {
+        waitForReady();
+        run();
+        done();
+    } catch (...) {
+        throwErrorLater();
     }
     virtual void run() = 0;
 protected:
